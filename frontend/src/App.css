@@ -491,6 +491,24 @@ pre {
   font-size: 0.73rem;
   word-break: break-all;
 }
+.audit-detail-field--reqid {
+  flex-basis: 100%;
+  min-width: 0;
+}
+.copy-btn {
+  align-items: center;
+  background: none;
+  border: 1px solid #b8ccd8;
+  border-radius: 3px;
+  color: #4a6878;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.68rem;
+  line-height: 1;
+  margin-left: 4px;
+  padding: 1px 4px;
+}
+.copy-btn:hover { background: #e8f2f8; border-color: #7aaecc; color: #1a4a6a; }
 
 /* ---- Security Proofs ---- */
 .proof-card { margin-bottom: 18px; }

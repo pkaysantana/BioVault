@@ -8,7 +8,9 @@ Covers the BasedAI review requirements:
 5. multi-level revocation propagation
 6. audit events for allow/deny/grant/revoke/derive
 7. permission latency benchmark (P99 < 200ms)
+8. structured audit detail on artifact reads and /query
 """
+import json
 import time
 
 from tests.conftest import auth
@@ -249,3 +251,86 @@ def test_permission_latency_p99_under_200ms(seeded, client):
     # The server-side metric should also be well under budget.
     metrics = client.get("/metrics/permission-latency").json()
     assert metrics["p99_ms"] < 200.0
+
+
+# ---------------------------------------------------------------------------
+# 8. Structured audit detail on artifact reads and /query
+# ---------------------------------------------------------------------------
+
+def test_artifact_read_audit_contains_structured_detail(seeded, client):
+    tokens = seeded
+
+    # CEO read → allow (has capability grant); CRO read → deny (no grant).
+    allow_resp = read(client, tokens["u_ceo"], PHASE2)
+    deny_resp  = read(client, tokens["u_cro"], PHASE2)
+
+    assert allow_resp.json()["access"]["decision"] == "allow"
+    assert deny_resp.json()["access"]["decision"]  == "deny"
+
+    allow_req_id = allow_resp.json()["access"]["request_id"]
+    deny_req_id  = deny_resp.json()["access"]["request_id"]
+
+    events = client.get("/audit").json()
+
+    allow_event = next((e for e in events if e.get("request_id") == allow_req_id), None)
+    deny_event  = next((e for e in events if e.get("request_id") == deny_req_id), None)
+
+    assert allow_event is not None, "Allow audit event not found by request_id"
+    assert deny_event  is not None, "Deny audit event not found by request_id"
+
+    # Both events must carry parseable structured detail JSON.
+    for event, label in [(allow_event, "allow"), (deny_event, "deny")]:
+        assert event["detail"] is not None, f"{label} audit event has no detail"
+        detail = json.loads(event["detail"])
+
+        assert "purpose"    in detail, f"{label} detail missing purpose"
+        assert "principal"  in detail, f"{label} detail missing principal"
+        assert "operation"  in detail, f"{label} detail missing operation"
+        assert event["artifact_id"] == PHASE2, f"{label} artifact_id mismatch"
+        assert event["request_id"],             f"{label} request_id is empty"
+
+    # Allow event: grant_id must be present because access went through a capability grant.
+    allow_detail = json.loads(allow_event["detail"])
+    assert "grant_id" in allow_detail, "Allow event detail missing grant_id"
+
+    # Decision values must survive the round-trip.
+    assert allow_event["decision"] == "allow"
+    assert deny_event["decision"]  == "deny"
+
+
+def test_query_audit_contains_structured_detail(seeded, client):
+    tokens = seeded
+
+    # CEO queries via the agent retrieval gate with a distinct purpose string.
+    resp = client.post(
+        "/query",
+        headers=auth(tokens["u_ceo"]),
+        json={"artifact_id": PHASE2, "purpose": "agent_retrieval_evidence_test"},
+    )
+    assert resp.json()["decision"] == "allow"
+    req_id = resp.json()["request_id"]
+
+    events = client.get("/audit").json()
+    event = next((e for e in events if e.get("request_id") == req_id), None)
+
+    assert event is not None, "Query audit event not found by request_id"
+    assert event["detail"] is not None, "Query audit event has no detail"
+
+    detail = json.loads(event["detail"])
+
+    # Core provenance fields.
+    assert "purpose"   in detail
+    assert detail["purpose"]    == "agent_retrieval_evidence_test"
+    assert "principal" in detail
+    assert detail["principal"]  == "u_ceo"
+    assert "operation" in detail
+
+    # Traceability.
+    assert event["artifact_id"] == PHASE2
+    assert event["request_id"]  == req_id
+
+    # CEO has a capability grant → grant_id must appear.
+    assert "grant_id" in detail, "Query audit detail missing grant_id on allow"
+
+    # Decision round-trip.
+    assert event["decision"] == "allow"

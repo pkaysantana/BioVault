@@ -223,7 +223,7 @@ function ComplianceMatrix({
     if (c.liveKey === "audit" && auditCount > 0)
       return <span className="pass-badge live">LIVE</span>;
     if (c.badge === "CODE EVIDENCE")
-      return <span className="pass-badge code-ev">CODE</span>;
+      return <span className="pass-badge code-ev">CODE EVIDENCE</span>;
     return <span className="pass-badge tested">TESTED</span>;
   }
 
@@ -997,6 +997,8 @@ const DETAIL_KEYS = [
 ] as const;
 
 function AuditDetailRow({ event }: { event: AuditEvent }) {
+  const [copied, setCopied] = useState(false);
+
   let parsed: Record<string, unknown> | null = null;
   if (event.detail) {
     if (typeof event.detail === "string") {
@@ -1016,11 +1018,24 @@ function AuditDetailRow({ event }: { event: AuditEvent }) {
         .map((k) => [k, parsed![k]] as [string, unknown])
     : [];
 
+  function copyReqId() {
+    if (!event.request_id) return;
+    navigator.clipboard.writeText(event.request_id).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
   return (
     <div className="audit-detail-row">
-      <div className="audit-detail-field">
+      <div className="audit-detail-field audit-detail-field--reqid">
         <span className="audit-detail-key">request_id</span>
         <code className="audit-detail-val">{event.request_id ?? "—"}</code>
+        {event.request_id && (
+          <button className="copy-btn" onClick={copyReqId} title="Copy full request_id">
+            {copied ? "✓" : "⧉"}
+          </button>
+        )}
       </div>
       {entries.length > 0 ? (
         entries.map(([k, v]) => (
