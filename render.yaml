@@ -1,0 +1,21 @@
+# Render Blueprint — BioVault backend (FastAPI + SQLite demo).
+# Recommended pairing: this service + Vercel frontend (see docs/DEPLOYMENT.md).
+#
+# After deploy: open the Vercel frontend, click "Seed / Reset Demo" once.
+
+services:
+  - type: web
+    name: biovault-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: DEMO_ALLOW_ALL_CORS
+        value: "false"
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false

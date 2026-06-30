@@ -175,7 +175,9 @@ npm install
 npm run dev
 ```
 
-Runs at `http://localhost:5173`. Override backend URL with `VITE_API_URL`.
+Runs at `http://localhost:5173`. Override backend URL with `VITE_API_BASE_URL` (see `frontend/.env.example`).
+
+Deploying for judges? See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) (Render backend + Vercel frontend).
 
 ### Tests
 
@@ -183,7 +185,7 @@ Runs at `http://localhost:5173`. Override backend URL with `VITE_API_URL`.
 cd backend
 .\.venv\Scripts\Activate.ps1
 python -m pytest -q
-# expected: 11 passed (includes P99 latency benchmark)
+# expected: 13 passed (includes P99 latency benchmark and audit evidence tests)
 ```
 
 ---

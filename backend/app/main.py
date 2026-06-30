@@ -240,11 +240,28 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     yield
 
 
+def _cors_origins() -> list[str]:
+    """Resolve allowed CORS origins from env. Wildcard only when explicitly enabled."""
+    if os.environ.get("DEMO_ALLOW_ALL_CORS", "").lower() in ("1", "true", "yes"):
+        return ["*"]
+    raw = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+
+_cors_allow_origins = _cors_origins()
+
 app = FastAPI(title="BioVault API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origins=_cors_allow_origins,
+    allow_credentials=_cors_allow_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

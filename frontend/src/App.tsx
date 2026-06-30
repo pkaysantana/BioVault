@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+/** Single API base for all fetch calls. Set VITE_API_BASE_URL at build time (Vercel). */
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,13 +102,13 @@ function authHeaders(token?: string): HeadersInit {
 }
 
 async function getJson<T>(path: string, token?: string): Promise<T> {
-  const r = await fetch(`${API_URL}${path}`, { headers: authHeaders(token) });
+  const r = await fetch(`${API_BASE_URL}${path}`, { headers: authHeaders(token) });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 }
 
 async function postJson<T>(path: string, body: unknown, token?: string): Promise<T> {
-  const r = await fetch(`${API_URL}${path}`, {
+  const r = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(token) },
     body: JSON.stringify(body),
