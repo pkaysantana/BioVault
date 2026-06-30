@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
-/** Single API base for all fetch calls. Set VITE_API_BASE_URL at build time (Vercel). */
+/** Single API base for all fetch calls. Unified Vercel deploy uses /api; override via VITE_API_BASE_URL. */
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
+  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ||
+  (import.meta.env.PROD ? "/api" : "http://localhost:8000");
 
 // ---------------------------------------------------------------------------
 // Types

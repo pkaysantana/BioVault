@@ -177,7 +177,7 @@ npm run dev
 
 Runs at `http://localhost:5173`. Override backend URL with `VITE_API_BASE_URL` (see `frontend/.env.example`).
 
-Deploying for judges? See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) (Render backend + Vercel frontend).
+Deploying for judges? See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — **recommended:** unified Vercel deploy from repo root (`vercel.json`); **alternative:** Render backend + Vercel frontend.
 
 ### Tests
 

@@ -1,5 +1,6 @@
 # Render Blueprint — BioVault backend (FastAPI + SQLite demo).
-# Recommended pairing: this service + Vercel frontend (see docs/DEPLOYMENT.md).
+# Alternative split deploy: this service + Vercel frontend with Root Directory `frontend`.
+# Recommended: unified Vercel deploy from repo root (see docs/DEPLOYMENT.md and vercel.json).
 #
 # After deploy: open the Vercel frontend, click "Seed / Reset Demo" once.
 
