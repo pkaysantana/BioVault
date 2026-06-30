@@ -74,8 +74,6 @@ Or use the separate local servers in [§4 Local verification](#4-local-verificat
 
 On Vercel serverless, the filesystem is ephemeral. Demo data may not survive cold starts or redeploys. Re-click **Seed / Reset Demo** when the artifact list is empty — expected for hackathon demo use.
 
-The backend stores SQLite at `/tmp/biovault.db` on Vercel (writable; auto-configured). If the **Acting principal** dropdown is empty, seed has not succeeded yet — click **Seed / Reset Demo** and wait for the success message.
-
 ### Optional environment variables (unified path)
 
 Usually not needed. Override only if you have a specific reason:

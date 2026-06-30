@@ -334,3 +334,103 @@ def test_query_audit_contains_structured_detail(seeded, client):
 
     # Decision round-trip.
     assert event["decision"] == "allow"
+
+
+# ---------------------------------------------------------------------------
+# SME scenario: company-memory / payroll-leakage tests
+# ---------------------------------------------------------------------------
+
+Q3_REPORT = "q3_growth_margin_report"
+PAYROLL    = "payroll_salary_register"
+CAMPAIGN   = "campaign_cost_summary"
+
+
+def test_sme_marketing_can_read_campaign_costs(seeded_sme, client):
+    tokens = seeded_sme
+    r = client.get(f"/artifacts/{CAMPAIGN}", headers=auth(tokens["u_marketing"]))
+    assert r.json()["access"]["decision"] == "allow"
+    assert "plaintext_content" in r.json()["artifact"]
+
+
+def test_sme_marketing_cannot_read_payroll(seeded_sme, client):
+    tokens = seeded_sme
+    r = client.get(f"/artifacts/{PAYROLL}", headers=auth(tokens["u_marketing"]))
+    assert r.json()["access"]["decision"] == "deny"
+    assert r.json()["access"]["reason"] == "missing_capability_grant"
+
+
+def test_sme_marketing_cannot_read_payroll_mixed_report(seeded_sme, client):
+    """Marketing lacks a capability on the payroll-mixed derived artifact.
+
+    Even though Marketing can read campaign_cost_summary and vendor_contracts
+    individually, the Q3 Growth Margin Report is a governed derived artifact whose
+    lineage includes payroll data. Marketing lacks a capability grant on it, and
+    payroll revocation propagates to it through lineage.
+    """
+    tokens = seeded_sme
+    r = client.get(f"/artifacts/{Q3_REPORT}", headers=auth(tokens["u_marketing"]))
+    assert r.json()["access"]["decision"] == "deny"
+    assert r.json()["access"]["reason"] == "missing_capability_grant"
+
+
+def test_sme_denial_returns_no_plaintext_content(seeded_sme, client):
+    tokens = seeded_sme
+    r = client.get(f"/artifacts/{Q3_REPORT}", headers=auth(tokens["u_marketing"]))
+    assert r.json()["access"]["decision"] == "deny"
+    # Content must never be present when access is denied.
+    assert "plaintext_content" not in r.json()["artifact"]
+
+
+def test_sme_finance_can_read_payroll_mixed_report_before_revocation(seeded_sme, client):
+    tokens = seeded_sme
+    r = client.get(f"/artifacts/{Q3_REPORT}", headers=auth(tokens["u_finance"]))
+    assert r.json()["access"]["decision"] == "allow"
+    assert "plaintext_content" in r.json()["artifact"]
+
+
+def test_sme_payroll_revocation_quarantines_derived_report(seeded_sme, client):
+    tokens = seeded_sme
+
+    # Finance can read the Q3 report before revocation.
+    r = client.get(f"/artifacts/{Q3_REPORT}", headers=auth(tokens["u_finance"]))
+    assert r.json()["access"]["decision"] == "allow"
+
+    # Owner revokes the payroll salary register.
+    resp = client.post(
+        f"/artifacts/{PAYROLL}/revoke",
+        headers=auth(tokens["u_owner"]),
+        json={"purpose": "data_integrity_review"},
+    ).json()
+    assert resp["revoked"] is True
+    assert Q3_REPORT in resp["quarantined"], "Q3 report must be quarantined on payroll revocation"
+
+    # Finance read of the Q3 report now denied via revoked lineage.
+    r = client.get(f"/artifacts/{Q3_REPORT}", headers=auth(tokens["u_finance"]))
+    assert r.json()["access"]["decision"] == "deny"
+    assert r.json()["access"]["reason"] == "derived_from_revoked_source"
+    assert "plaintext_content" not in r.json()["artifact"]
+
+
+def test_sme_audit_records_request_id_purpose_principal_operation_artifact(seeded_sme, client):
+    tokens = seeded_sme
+
+    # Marketing denial produces a fully-structured audit event.
+    r = client.get(f"/artifacts/{Q3_REPORT}", headers=auth(tokens["u_marketing"]))
+    assert r.json()["access"]["decision"] == "deny"
+    req_id = r.json()["access"]["request_id"]
+
+    events = client.get("/audit").json()
+    event = next((e for e in events if e.get("request_id") == req_id), None)
+
+    assert event is not None, "Audit event not found by request_id"
+    assert event["artifact_id"] == Q3_REPORT
+    assert event["user_id"]     == "u_marketing"
+    assert event["operation"]   == "read"
+    assert event["decision"]    == "deny"
+    assert event["request_id"]  == req_id
+
+    detail = json.loads(event["detail"])
+    assert "purpose"   in detail
+    assert "principal" in detail
+    assert detail["principal"] == "u_marketing"
+    assert "operation" in detail

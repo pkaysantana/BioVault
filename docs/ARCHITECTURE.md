@@ -2,49 +2,116 @@
 
 ## Overview
 
-BioVault is a deterministic, LLM-free capability enforcement layer that sits between AI science agents and the artifact store. The model — any open-weight runtime — is outside the enforcement boundary. It only sees content the gate has already authorised.
+BioVault is a deterministic, LLM-free capability enforcement layer that sits between AI agents and a shared artifact store. The model — any open-weight runtime — is outside the enforcement boundary. It only sees content the gate has already authorised.
 
-### Biotech scenario
+BioVault ships with two demo scenarios:
 
-The demo domain is pharmaceutical R&D. An AI science agent is given access to a corpus of source artifacts:
+- **SME / company-memory** (default): Payroll-leakage prevention. A marketing AI agent asks for Q3 cost data and must not receive a derived margin report that includes payroll-sensitive lineage.
+- **Biotech / AI science** (secondary): Pharma R&D. An AI science agent derives a Phase II readiness memo; when the adverse-event source is revoked for data integrity reasons, the derived memo and all its children are quarantined.
 
-- **Public target biology paper** — published, unrestricted
-- **Internal SAR table** — structure-activity relationship data; internal sensitivity
-- **Docking report** — computational chemistry results
-- **Toxicity report** — GLP safety study data; restricted
-- **CRO assay report** — external partner data
-- **Adverse-event memo** — safety signal; confidential
-- **Board update** — internal summary
-- **Phase II readiness memo** — derived from all of the above; confidential
-
-The agent derives the Phase II readiness memo from four source documents. Each source document may later be revoked (e.g. data integrity finding on the adverse-event memo, or a retraction of the SAR table). BioVault ensures that the derived memo is immediately quarantined when any included source is revoked — without requiring a role change, a policy re-evaluation, or a model-based decision.
+Both scenarios use the same permission engine, the same lineage model, and the same audit infrastructure. The difference is only the seeded dataset.
 
 ---
 
-## BasedAI Track Alignment
+## Why this is not secure RAG with role labels
 
-BioVault is built for the **BasedAI Enterprise Memory Governance at Scale** track. The specific track requirements it addresses:
+RAG with LLM-based sensitivity filtering:
+- Makes every retrieval go through a model to classify the content
+- Token-heavy: every retrieval consumes model tokens
+- Non-deterministic: the model can be confused, jailbroken, or prompted into surfacing sensitive context
+- Has no concept of artifact lineage: revoking a source document does not automatically close access to derived outputs
 
-| BasedAI Requirement | BioVault Implementation | Test / Code Evidence |
-|---|---|---|
-| Agent-level memory governance | Capability grants scoped to `(principal, artifact, operation)` — narrower than any group or role | `test_allow_deny_matrix` |
-| Sensitive data isolation | Fernet-encrypted content at rest; decrypted only after a passing permission check | `GET /artifacts/{id}` endpoint |
-| Auditability of every access | `log_audit()` records `request_id`, `principal_id`, decision, reason, `latency_ms`, and structured `detail` JSON | `test_audit_records_all_operation_types` |
-| Lineage tracking | `lineage_edges` stores parent IDs, `source_hash`, `inclusion` (included/redacted), `dependency_type`, `reason` | `GET /lineage/{id}` |
-| Revocation propagation | BFS quarantine of all active derived descendants when a source artifact is revoked | `test_multi_level_revocation_propagation` |
-| No LLM in the governance path | `evaluate_access()` is pure SQL + Python; no model import exists in `backend/app/main.py` | code inspection: zero model imports |
-| Sub-200ms governance latency | Indexed SQLite lookups; P99 measured live via `GET /metrics/permission-latency` | `test_permission_latency_p99_under_200ms` |
+BioVault's permission path:
+- Pure SQL — deterministic, reproducible, auditable
+- **Zero model tokens consumed in the permission path**
+- Lineage-aware: revoking a source quarantines all derived descendants via BFS propagation
+- Every decision logged with a structured `request_id` for traceability
+
+---
+
+## Why global memory avoids duplicated-silo drift
+
+The alternative approach — copying files into per-team folders — breaks governance:
+
+1. Finance copies the payroll register into a "shared" folder for the analyst.
+2. The original is revoked. The copy persists. Governance sees only the original.
+3. The analyst's AI agent retrieves the copy. Payroll data leaks.
+
+BioVault uses one canonical store. Every team reads the same artifact under their own capability grant. No copies means no drift. Revoking the payroll register propagates through lineage to every derived artifact that included it — through one BFS traversal on one graph, not by chasing copies.
+
+---
+
+## SME scenario: principals and artifacts
+
+### Principals
+
+| ID | Name | Role | Capability grants |
+|---|---|---|---|
+| `u_owner` | Alex Kim | Owner | All ops on all artifacts |
+| `u_finance` | Jordan Lee | Finance Lead | `read` on payroll register, Q3 report, handbook |
+| `u_marketing` | Morgan Chen | Marketing Manager | `read` on campaign costs, vendor contracts, customer feedback, handbook |
+| `u_hr` | Riley Park | HR Lead | `read` on payroll register, handbook |
+| `u_ops` | Sam Rivera | Operations Manager | `read` on vendor contracts, handbook |
+| `u_contractor` | Casey Jones | External Contractor | `read` on handbook only |
+
+### Artifacts
+
+| ID | Title | Type | Sensitivity |
+|---|---|---|---|
+| `campaign_cost_summary` | Campaign Cost Summary | source | internal |
+| `vendor_contracts` | Vendor Contracts | source | internal |
+| `payroll_salary_register` | Payroll Salary Register | source | confidential |
+| `shared_customer_feedback` | Customer Feedback Digest | source | internal |
+| `company_handbook` | Company Handbook | source | public |
+| `q3_growth_margin_report` | Q3 Growth Margin Report | **derived** | confidential |
+
+### Lineage
+
+```
+campaign_cost_summary ──┐
+vendor_contracts      ──┼──► q3_growth_margin_report
+payroll_salary_register─┘
+```
+
+The leakage case: Marketing has `read` on `campaign_cost_summary` and `vendor_contracts` individually, but lacks a capability grant on `q3_growth_margin_report`. Even if Marketing could enumerate sources, they cannot read the governed derived artifact that synthesises those sources with payroll data.
+
+Payroll revocation propagates to `q3_growth_margin_report` through lineage — Finance is also denied after revocation.
+
+---
+
+## Biotech scenario: principals and artifacts (secondary)
+
+### Principals
+
+| ID | Name | Role | Capability grants |
+|---|---|---|---|
+| `u_ceo` | Avery Chen | CEO | All ops on all artifacts |
+| `u_regulatory` | Nora Singh | Regulatory Lead | `read` on toxicity report, adverse-event memo, Phase II memo |
+| `u_research` | Maya Patel | Research Scientist | `read`+`derive` on public paper, SAR table, docking report, toxicity report |
+| `u_compchem` | Leo Morgan | Computational Chemist | `read`+`derive` on public paper, SAR table, docking report |
+| `u_cro` | Owen Brooks | External CRO Scientist | `read` on public paper, CRO assay report |
+| `u_intern` | Iris Lopez | Intern | `read` on public paper only |
+
+### Lineage
+
+```
+public_target_paper ──┐
+internal_sar_table  ──┼──► phase2_readiness_memo ──► (exec brief — derived in demo)
+toxicity_report     ──┤
+adverse_event_memo  ──┘
+```
+
+Revoking `adverse_event_memo` quarantines `phase2_readiness_memo` and every artifact derived from it.
 
 ---
 
 ## Request flow
 
 ```
-Open-weight model (Qwen / Llama 3 / Mistral / Phi / GLM / BGE / E5 / Nomic …)
+Agent runtime (any model)
 │
-│  Tool call or REST call:
-│  POST /query  { "artifact_id": "phase2_readiness_memo", "purpose": "generate_summary" }
-│  Authorization: Bearer <plaintext_capability_token>
+│  POST /query  { "artifact_id": "q3_growth_margin_report", "purpose": "agent_retrieval" }
+│  Authorization: Bearer <capability_token>
 │
 ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -81,7 +148,7 @@ Open-weight model (Qwen / Llama 3 / Mistral / Phi / GLM / BGE / E5 / Nomic …)
 ▼
 Agent receives response.
 If allow → pass plaintext_content as context to the model.
-If deny  → do NOT call the model with this artifact; surface the denial to the user.
+If deny  → do NOT call the model with this artifact; surface denial to user.
 │
 ▼
 Open-weight model generates output using only authorised context.
@@ -116,13 +183,6 @@ capability_grants
   operation     TEXT  CHECK (operation IN ('read','derive','revoke','grant','redact'))
   revoked       INT   DEFAULT 0
   expires_at    TEXT  NULLABLE
-  grant_id      TEXT
-  issuer_id     TEXT
-  subject       TEXT
-  scope         TEXT
-  purpose       TEXT
-  request_id    TEXT
-  granted_at    TEXT
 
 lineage_edges
   parent_artifact_id  TEXT  REFERENCES artifacts(id)
@@ -134,7 +194,7 @@ lineage_edges
   reason              TEXT
 
 audit_events
-  id            INTEGER PRIMARY KEY AUTOINCREMENT
+  id            TEXT  PRIMARY KEY
   timestamp     TEXT
   user_id       TEXT
   artifact_id   TEXT
@@ -150,7 +210,7 @@ redaction_attestations
   created_by    TEXT
   created_at    TEXT
   reason        TEXT
-  source_hashes TEXT  (JSON array of SHA-256 hashes)
+  detail        TEXT  (JSON blob — source_hashes, included, redacted parents)
 ```
 
 ### Indexes
@@ -168,7 +228,7 @@ CREATE INDEX IF NOT EXISTS idx_lineage_child
 CREATE INDEX IF NOT EXISTS idx_audit_ts
   ON audit_events (timestamp);
 
-CREATE INDEX IF NOT EXISTS idx_token_hash
+CREATE INDEX IF NOT EXISTS idx_users_token
   ON users (token_hash);
 ```
 
@@ -181,12 +241,13 @@ CREATE INDEX IF NOT EXISTS idx_token_hash
  │  OUTSIDE the enforcement boundary                           │
  │                                                             │
  │   ┌─────────────────────────────────────────────────────┐   │
- │   │  Open-weight model runtime                          │   │
- │   │  (Qwen, Llama, Mistral, GLM, BGE, E5, Nomic, …)    │   │
+ │   │  Agent / model runtime                              │   │
+ │   │  (any open-weight model: Qwen, Llama, Mistral, …)  │   │
  │   │                                                     │   │
  │   │  Calls POST /query to retrieve authorised context.  │   │
  │   │  Generates a response from that context only.       │   │
  │   │  Cannot access any artifact that was denied.        │   │
+ │   │  Does NOT influence the permission decision.        │   │
  │   └───────────────────┬─────────────────────────────────┘   │
  │                       │ POST /query                         │
  └───────────────────────┼─────────────────────────────────────┘
@@ -197,7 +258,7 @@ CREATE INDEX IF NOT EXISTS idx_token_hash
  │   resolve_principal → evaluate_access → log_audit           │
  │                                                             │
  │   Deterministic. No model call. No probabilistic path.      │
- │   LLM cannot influence whether access is granted.           │
+ │   0 model tokens consumed. Sub-millisecond. Audited.        │
  └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -210,7 +271,8 @@ CREATE INDEX IF NOT EXISTS idx_token_hash
 | Capability per `(principal, artifact, operation)` | Minimise blast radius — no wildcard grants |
 | SHA-256 token hash only stored | Eliminates token leakage via DB read |
 | Lineage integrity on every read | Ensures revocation effect is felt at read time, not just derivation time |
-| BFS quarantine on revoke | O(n) where n is number of descendants; acceptable for typical artifact graph sizes |
+| BFS quarantine on revoke | O(n) where n is number of descendants; consistent regardless of depth |
+| Scenario-aware seeding via `?scenario=` | Same permission engine; different artifact graph demonstrates generality |
 | SQLite for demo | Zero-infrastructure; replace with PostgreSQL for production concurrency |
 | No model in permission path | Permission decisions must be auditable, reproducible, and deterministic |
 | `POST /query` as model gate | Single choke point; all agent access goes through the same enforcement stack |
@@ -236,14 +298,15 @@ def retrieve_artifact(artifact_id: str, capability_token: str) -> dict:
     r.raise_for_status()
     return r.json()
 
-# In the agent loop:
-result = retrieve_artifact("phase2_readiness_memo", token)
+# SME example — Marketing agent asks for the Q3 report:
+result = retrieve_artifact("q3_growth_margin_report", marketing_token)
 if result["decision"] == "allow":
     context = result["plaintext_content"]
     # pass context to model.generate(...)
 else:
     # surface denial to user; do not call model with this artifact
     print(f"Access denied: {result['reason']} ({result['request_id']})")
+    # reason: "missing_capability_grant" (or "derived_from_revoked_source" after payroll revocation)
 ```
 
-The capability token is issued at seed time (`POST /seed`) or via a grant (`POST /artifacts/{id}/grant`) and is passed to the agent by the platform layer. The model itself never holds or manages tokens.
+The capability token is issued at seed time (`POST /seed?scenario=sme`) or via a grant (`POST /artifacts/{id}/grant`) and is passed to the agent by the platform layer. The model itself never holds or manages tokens.
