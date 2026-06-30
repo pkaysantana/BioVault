@@ -84,8 +84,83 @@ button:hover:not(:disabled) { transform: translateY(-1px); }
   padding: 22px 24px;
 }
 
+/* ---- Compliance matrix ---- */
+.compliance-card { margin-bottom: 18px; }
+.compliance-sub {
+  color: #637386;
+  font-size: 0.78rem;
+  margin: -10px 0 16px;
+}
+
+.compliance-list { display: grid; gap: 10px; }
+
+.compliance-row {
+  align-items: flex-start;
+  display: flex;
+  gap: 14px;
+}
+
+.pass-badge {
+  background: #d6f5e8;
+  border-radius: 8px;
+  color: #0f6b3e;
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  margin-top: 2px;
+  padding: 3px 9px;
+  text-transform: uppercase;
+}
+.pass-badge.fail { background: #fde6e4; color: #9a221e; }
+
+.compliance-row strong { display: block; font-size: 0.88rem; font-weight: 800; color: #172033; }
+.compliance-detail { color: #637386; display: block; font-size: 0.78rem; margin-top: 1px; }
+
+/* ---- Concept cards ---- */
+.concept-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 18px;
+}
+
+.concept-card { padding: 20px 22px; }
+
+.concept-icon {
+  color: #1b9a7f;
+  display: block;
+  font-size: 1.6rem;
+  margin-bottom: 10px;
+  line-height: 1;
+}
+
+.concept-title {
+  color: #172033;
+  font-size: 0.92rem;
+  font-weight: 900;
+  margin: 0 0 8px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.concept-body {
+  color: #4a6070;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
 /* ---- Demo steps ---- */
 .demo-steps { margin-bottom: 18px; }
+.demo-sub {
+  color: #8898aa;
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  margin-left: 8px;
+  text-transform: none;
+}
 .demo-steps h2 { margin: 0 0 14px; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; color: #4a6070; }
 
 .step-list {
@@ -386,6 +461,7 @@ pre {
 @media (max-width: 1100px) {
   .hero { flex-direction: column; }
   .dashboard { grid-template-columns: 1fr; }
+  .concept-grid { grid-template-columns: 1fr; }
   .step-list { flex-direction: column; }
   .step { min-width: 100%; }
 }
