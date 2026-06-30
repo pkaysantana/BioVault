@@ -116,20 +116,12 @@ button:hover:not(:disabled) { transform: translateY(-1px); }
 
 .compliance-row strong { display: block; font-size: 0.88rem; font-weight: 800; color: #172033; }
 .compliance-detail { color: #637386; display: block; font-size: 0.78rem; margin-top: 1px; }
-.compliance-evidence {
-  color: #1b9a7f;
-  display: block;
-  font-size: 0.72rem;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  margin-top: 3px;
-  opacity: 0.85;
-}
 
 /* ---- Concept cards ---- */
 .concept-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   margin-bottom: 18px;
 }
 
@@ -466,14 +458,9 @@ pre {
 .empty { color: #8898aa; font-style: italic; font-size: 0.85rem; margin: 4px 0; }
 
 /* ---- Responsive ---- */
-@media (max-width: 1280px) {
-  .concept-grid { grid-template-columns: repeat(2, 1fr); }
-}
-
 @media (max-width: 1100px) {
   .hero { flex-direction: column; }
   .dashboard { grid-template-columns: 1fr; }
-  .concept-grid { grid-template-columns: 1fr; }
   .step-list { flex-direction: column; }
   .step { min-width: 100%; }
 }

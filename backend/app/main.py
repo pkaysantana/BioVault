@@ -768,6 +768,56 @@ def revoke_artifact(
         return {"access": result, "revoked": True, "artifact_id": artifact_id, "quarantined": quarantined}
 
 
+class QueryRequest(BaseModel):
+    artifact_id: str
+    purpose: str = "agent_retrieval"
+    context: str = ""
+
+
+@app.post("/query")
+def query_artifact(
+    request: QueryRequest, principal_id: str = Depends(resolve_principal)
+) -> dict[str, Any]:
+    """
+    Agent-facing retrieval gate for open-weight model runtimes.
+
+    An agent calls this endpoint BEFORE passing content to any model. If the
+    decision is 'allow', plaintext_content is returned and the agent may use it
+    as context for generation. If the decision is 'deny', no content is returned
+    and the model must not attempt to retrieve it through any other path.
+
+    The permission check is identical to GET /artifacts/{id}: same
+    resolve_principal(), same evaluate_access(), same log_audit(). No model
+    call occurs here. The open-weight model sits entirely outside this boundary.
+
+    Compatible runtimes: Qwen, Llama, Mistral, GLM, and any model using a tool
+    or function-calling interface. See docs/ARCHITECTURE.md for the integration
+    pattern.
+    """
+    rid = new_request_id()
+    result = can_access(principal_id, request.artifact_id, "read", rid)
+
+    response: dict[str, Any] = {
+        "decision": result["decision"],
+        "reason": result["reason"],
+        "latency_ms": result["latency_ms"],
+        "request_id": rid,
+        "artifact_id": request.artifact_id,
+        "principal_id": principal_id,
+    }
+
+    if result["decision"] == "allow":
+        with connect() as conn:
+            row = get_artifact(conn, request.artifact_id)
+        if row:
+            response["title"] = row["title"]
+            response["sensitivity"] = row["sensitivity"]
+            response["status"] = row["status"]
+            response["plaintext_content"] = decrypt(row["encrypted_content"])
+
+    return response
+
+
 @app.post("/derive")
 def derive_artifact(
     request: DeriveRequest, principal_id: str = Depends(resolve_principal)
@@ -937,99 +987,6 @@ def audit(limit: int = Query(default=200, le=500)) -> list[dict[str, Any]]:
             "SELECT * FROM audit_events ORDER BY timestamp DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(row) for row in rows]
-
-
-# ---------------------------------------------------------------------------
-# Open-weight model adapter stub
-# ---------------------------------------------------------------------------
-# This endpoint demonstrates the BioVault integration pattern for AI agents:
-#   1. Resolve principal (token-bound, no ?user_id= authority)
-#   2. Enforce capability + lineage check (deterministic, no model call)
-#   3. Return the authorised content blob to the caller
-#
-# The caller is responsible for forwarding the blob to their chosen
-# open-weight model runtime (Qwen / Llama / Mistral / GLM / BGE / E5 / Nomic).
-# BioVault makes zero model calls — the permission gate runs before any model
-# receives content.
-
-
-class QueryRequest(BaseModel):
-    artifact_id: str
-    prompt: str | None = None  # forwarded verbatim to caller; not executed here
-
-
-@app.post("/query")
-def agent_query(
-    body: QueryRequest,
-    principal_id: str = Depends(resolve_principal),
-) -> dict[str, Any]:
-    """
-    Open-weight model adapter stub.
-
-    Enforces BioVault access control, then returns the authorised artifact
-    content for the calling agent to pass to its chosen model.
-
-    The permission path is model-free: no LLM is called here.
-    """
-    request_id = f"req_{uuid.uuid4().hex[:12]}"
-    start = time.perf_counter()
-    artifact_id = body.artifact_id
-
-    with connect() as conn:
-        artifact = conn.execute(
-            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
-        ).fetchone()
-
-    access = evaluate_access(principal_id, artifact_id, "read")
-    latency_ms = round((time.perf_counter() - start) * 1000, 3)
-    log_audit(
-        user_id=principal_id,
-        artifact_id=artifact_id,
-        operation="read",
-        decision=access["decision"],
-        reason=access["reason"],
-        latency_ms=latency_ms,
-        request_id=request_id,
-        detail={"source": "agent_query", "prompt_provided": body.prompt is not None},
-    )
-
-    if access["decision"] != "allow":
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "decision": "deny",
-                "reason": access["reason"],
-                "request_id": request_id,
-                # Instructs caller not to forward to model
-                "model_forwarding": "blocked — content withheld by BioVault",
-            },
-        )
-
-    content: str | None = None
-    if artifact and artifact["encrypted_content"]:
-        try:
-            content = fernet.decrypt(artifact["encrypted_content"]).decode()
-        except Exception:
-            content = None
-
-    return {
-        "decision": "allow",
-        "request_id": request_id,
-        "artifact_id": artifact_id,
-        "latency_ms": latency_ms,
-        # Authorised content ready to forward to open-weight model
-        "authorised_content": content,
-        # Forwarded verbatim; BioVault does not execute the prompt
-        "prompt": body.prompt,
-        "model_forwarding": (
-            "permitted — pass authorised_content + prompt to your open-weight model "
-            "(Qwen / Llama / Mistral / GLM / BGE / E5 / Nomic or any compatible runtime)"
-        ),
-        "note": (
-            "BioVault enforces the permission gate before any model sees this content. "
-            "No model is called in the permission path."
-        ),
-    }
 
 
 @app.get("/metrics/permission-latency")
