@@ -683,7 +683,7 @@ export default function App() {
             await refresh();
             setMessage(
               "Lineage: campaign_cost_summary + vendor_contracts + payroll_salary_register → q3_growth_margin_report. " +
-                "Marketing has access to the sources individually, but lacks a capability on this governed derived artifact.",
+                "Marketing can read campaign costs and vendor contracts, but payroll remains restricted; the derived report is governed separately and is denied.",
             );
           } finally {
             setLoading(false);
