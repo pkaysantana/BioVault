@@ -661,11 +661,15 @@ export default function App() {
         <label>
           Acting principal
           <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)}>
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name} — {u.role}
-              </option>
-            ))}
+            {users.length === 0 ? (
+              <option value="">No principals — click Seed / Reset Demo</option>
+            ) : (
+              users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} — {u.role}
+                </option>
+              ))
+            )}
           </select>
         </label>
         <div className="user-meta">
@@ -676,7 +680,7 @@ export default function App() {
           </span>
         </div>
         <button
-          disabled={loading || !selectedArtifactId}
+          disabled={loading || !selectedArtifactId || users.length === 0 || !tokenFor(selectedUserId)}
           onClick={() => openArtifact()}
         >
           Open Selected Artifact

@@ -8,6 +8,9 @@
     "backend": {
       "root": "backend",
       "entrypoint": "app.main:app",
+      "env": {
+        "BIOVAULT_DB": "/tmp/biovault.db"
+      },
       "routes": [
         {
           "src": "/api/(.*)",

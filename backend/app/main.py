@@ -19,7 +19,16 @@ from pydantic import BaseModel
 
 
 # DB path is overridable so tests can use an isolated database.
-DB_PATH = Path(os.environ.get("BIOVAULT_DB", str(Path(__file__).resolve().parents[1] / "biovault.db")))
+def _default_db_path() -> str:
+    if os.environ.get("BIOVAULT_DB"):
+        return os.environ["BIOVAULT_DB"]
+    # Vercel/Lambda filesystems are read-only outside /tmp.
+    if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return "/tmp/biovault.db"
+    return str(Path(__file__).resolve().parents[1] / "biovault.db")
+
+
+DB_PATH = Path(_default_db_path())
 
 # Demo-only: deterministic Fernet key derived from a fixed phrase.
 # Not production-safe — replace with a secrets manager in any real deployment.
