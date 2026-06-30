@@ -38,7 +38,7 @@ The frontend uses `/api` as its API base in production automatically — no cros
 
 1. In Vercel: **Add New → Project** → import this repository.
 2. Leave **Root Directory** as `.` (repo root). Do **not** set it to `frontend/`.
-3. Vercel reads [`vercel.json`](../vercel.json) at the repo root and builds both services.
+3. Vercel reads [`vercel.json`](../vercel.json) at the repo root and builds both services. The backend uses [`backend/pyproject.toml`](../backend/pyproject.toml) for Python dependencies (Vercel prefers this over `requirements.txt`).
 4. Deploy. No environment variables are required for the basic demo.
 5. Open your deployment URL (e.g. `https://biovault.vercel.app`).
 6. Click **Seed / Reset Demo** once — that calls `POST /api/seed`.
@@ -63,7 +63,7 @@ With Vercel CLI 48.1.8+:
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cd ..
 vercel dev
 ```
@@ -191,7 +191,7 @@ Reference: [`backend/.env.example`](../backend/.env.example).
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
 

@@ -1,0 +1,4 @@
+* text=auto eol=lf
+backend/requirements.txt text eol=lf
+backend/requirements-dev.txt text eol=lf
+backend/pyproject.toml text eol=lf
