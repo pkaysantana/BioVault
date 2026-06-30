@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# BioVault local persistence
+backend/biovault.db
+
+# Node
+node_modules/
+dist/
+
+# Local environment
+.env
+.env.*
