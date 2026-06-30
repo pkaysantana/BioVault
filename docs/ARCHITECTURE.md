@@ -4,6 +4,37 @@
 
 BioVault is a deterministic, LLM-free capability enforcement layer that sits between AI science agents and the artifact store. The model — any open-weight runtime — is outside the enforcement boundary. It only sees content the gate has already authorised.
 
+### Biotech scenario
+
+The demo domain is pharmaceutical R&D. An AI science agent is given access to a corpus of source artifacts:
+
+- **Public target biology paper** — published, unrestricted
+- **Internal SAR table** — structure-activity relationship data; internal sensitivity
+- **Docking report** — computational chemistry results
+- **Toxicity report** — GLP safety study data; restricted
+- **CRO assay report** — external partner data
+- **Adverse-event memo** — safety signal; confidential
+- **Board update** — internal summary
+- **Phase II readiness memo** — derived from all of the above; confidential
+
+The agent derives the Phase II readiness memo from four source documents. Each source document may later be revoked (e.g. data integrity finding on the adverse-event memo, or a retraction of the SAR table). BioVault ensures that the derived memo is immediately quarantined when any included source is revoked — without requiring a role change, a policy re-evaluation, or a model-based decision.
+
+---
+
+## BasedAI Track Alignment
+
+BioVault is built for the **BasedAI Enterprise Memory Governance at Scale** track. The specific track requirements it addresses:
+
+| BasedAI Requirement | BioVault Implementation | Test / Code Evidence |
+|---|---|---|
+| Agent-level memory governance | Capability grants scoped to `(principal, artifact, operation)` — narrower than any group or role | `test_allow_deny_matrix` |
+| Sensitive data isolation | Fernet-encrypted content at rest; decrypted only after a passing permission check | `GET /artifacts/{id}` endpoint |
+| Auditability of every access | `log_audit()` records `request_id`, `principal_id`, decision, reason, `latency_ms`, and structured `detail` JSON | `test_audit_records_all_operation_types` |
+| Lineage tracking | `lineage_edges` stores parent IDs, `source_hash`, `inclusion` (included/redacted), `dependency_type`, `reason` | `GET /lineage/{id}` |
+| Revocation propagation | BFS quarantine of all active derived descendants when a source artifact is revoked | `test_multi_level_revocation_propagation` |
+| No LLM in the governance path | `evaluate_access()` is pure SQL + Python; no model import exists in `backend/app/main.py` | code inspection: zero model imports |
+| Sub-200ms governance latency | Indexed SQLite lookups; P99 measured live via `GET /metrics/permission-latency` | `test_permission_latency_p99_under_200ms` |
+
 ---
 
 ## Request flow

@@ -1,6 +1,8 @@
 # BioVault Demo Script
 
-> Audience: Hackathon judges reviewing the BasedAI Enterprise Memory Governance track.
+> Audience: Hackathon judges reviewing the **BasedAI Enterprise Memory Governance at Scale** track.
+>
+> Scenario: An AI science agent in a pharma R&D workspace derives a Phase II readiness memo from four sensitive source documents. One source is later revoked. This demo shows that BioVault automatically quarantines the derived artifact without touching any role policy — and does so in milliseconds, without a model call.
 
 ---
 
@@ -8,8 +10,11 @@
 
 1. Start backend: `uvicorn app.main:app --reload` (port 8000)
 2. Start frontend: `npm run dev` (port 5173)
-3. Open `http://localhost:5173` — you should see the BioVault dashboard.
-4. If the artifact list is empty, click **Seed Demo Data** to initialise.
+3. Open `http://localhost:5173` — the dashboard auto-seeds on load.
+4. If the artifact list is empty, click **↺ Seed / Reset Demo**.
+5. Point out the **Flow Banner** at the top of the dashboard:
+   `Bearer token → resolve_principal() → evaluate_access() → log_audit() → Decrypt (allow only)`
+   This is the entire permission path — no model call anywhere in that chain.
 
 ---
 
@@ -17,21 +22,27 @@
 
 ### [0:00–0:20] Introduce the problem
 
-> "BioVault asks: what happens when an AI agent derives a Phase II readiness memo from a set of source documents, and then one of those source documents — say, an adverse event memo — is revoked? Standard role-based access control has no answer. BioVault does."
+> "BioVault asks: what happens when an AI agent derives a Phase II readiness memo from four source documents, and then one of those source documents — the adverse event memo — is revoked due to a data integrity finding? Standard role-based access control has no answer. BioVault does."
 
-Point to the **Concept Cards** section:
-- "RBAC controls users. BioVault controls artifacts and their descendants."
-- "Revoking a source quarantines downstream derived artifacts."
+Point to the **Concept Cards**:
+- *"RBAC controls users. BioVault controls artifacts and their descendants."*
+- *"Revoking a source quarantines downstream derived artifacts."*
+
+Point to the **Flow Banner**: "This is the entire permission path. Bearer token in, decision out. No model."
+
+> **BasedAI requirement addressed:** Agent-level memory governance; no LLM in the governance path.
 
 ---
 
-### [0:20–0:40] Step 1 — CEO opens the Phase II memo (ALLOW)
+### [0:20–0:40] Step 1 — CEO opens Phase II memo (ALLOW)
 
 Click **Step 1** in the Guided Demo panel.
 
-> "CEO Avery Chen holds a `read` capability on the Phase II Readiness Memo. All four source artifacts are active. Decision: ALLOW. Content is decrypted and shown."
+> "CEO Avery Chen presents their capability token. The server hashes it, looks up the principal, checks that Avery holds a `read` grant on the Phase II memo, and verifies that all four source artifacts are active. Decision: ALLOW. Content is decrypted and shown in the Access Check panel."
 
-Point to the artifact panel — status badge `active`, content visible.
+Point to the **Access Check** panel — green `allow` banner, `capability_and_lineage_valid`, latency in single-digit milliseconds.
+
+> **BasedAI requirement addressed:** Artifact-level capability check; lineage integrity enforced on every read.
 
 ---
 
@@ -39,9 +50,11 @@ Point to the artifact panel — status badge `active`, content visible.
 
 Click **Step 2**.
 
-> "Owen Brooks, our external CRO, has no capability grant on the Phase II memo. The permission check returns `missing_capability_grant`. No content is returned — not even a partial view."
+> "Owen Brooks, the external CRO, presents his token. He has read access to the public target paper and the CRO assay report — but no capability grant on the Phase II memo. The check returns `missing_capability_grant`. No content is returned."
 
-Point to the artifact panel — decision `DENY`, content empty.
+Point to the **Access Check** panel — red `deny` banner, content `withheld`.
+
+> **BasedAI requirement addressed:** Capability-bound identity prevents access without an explicit grant. A role like "external CRO" grants nothing by itself.
 
 ---
 
@@ -49,7 +62,9 @@ Point to the artifact panel — decision `DENY`, content empty.
 
 Click **Step 3**.
 
-> "Nora Singh, Regulatory Lead, does hold a read grant. Allowed. The same deterministic check, a different outcome — purely because the capability grant exists."
+> "Nora Singh, the Regulatory Lead, does hold a read grant on the Phase II memo. Identical check, different grant, different outcome. Deterministic."
+
+> **BasedAI requirement addressed:** Capability grants are per-artifact and per-principal — same artifact, different result for different principals.
 
 ---
 
@@ -57,10 +72,13 @@ Click **Step 3**.
 
 Click **Step 4**.
 
-> "Now I'll revoke the adverse event memo — imagine a safety review found a data integrity issue. Watch what happens downstream."
+> "Now I revoke the adverse event memo — imagine a safety pharmacology reviewer flagged a data integrity error. Watch the lineage panel."
 
-After the step completes, point to the status message:
-> "The backend ran a BFS over the lineage graph. Phase II Readiness Memo and the Exec Brief derived from it are now quarantined — automatically, without touching the user's role or re-evaluating every policy rule."
+After the step completes, point to the status message and the **Lineage** panel:
+
+> "The backend traversed the lineage graph using BFS. Phase II Readiness Memo — derived from the adverse event memo — is now quarantined. So is the Exec Brief derived from the Phase II memo. Two artifacts quarantined automatically, zero role changes, zero model calls."
+
+> **BasedAI requirement addressed:** Source revocation propagation; lineage-aware access control.
 
 ---
 
@@ -68,9 +86,11 @@ After the step completes, point to the status message:
 
 Click **Step 5**.
 
-> "The CEO — who was allowed just 90 seconds ago — is now denied. Not because their role changed. Because the artifact is quarantined. Reason: `derived_from_revoked_source`."
+> "Avery Chen — the CEO, who was allowed 90 seconds ago — is now denied. Reason: `derived_from_revoked_source`. Not because their role changed. Because the artifact is quarantined by lineage. The amber badges in the artifact list show which artifacts are affected."
 
-Point to the amber `quarantined` badges in the artifact list.
+Point to the amber `quarantined` badges in the **Artifacts** panel.
+
+> **BasedAI requirement addressed:** Revocation propagation is immediate and automatic; no cache TTL, no eventual consistency.
 
 ---
 
@@ -78,11 +98,12 @@ Point to the amber `quarantined` badges in the artifact list.
 
 Click **Step 6**, then scroll to the **Compliance Matrix** and **Audit Log**.
 
-> "Every decision — allow and deny — is recorded with a request ID, principal ID, reason, and latency. The compliance matrix shows all nine requirements. P99 latency is live — it stays well under 200 milliseconds because we use indexed SQL, not a model call."
+> "Every decision — allow, deny, revoke, derive — is recorded with a `request_id`, `principal_id`, `reason`, and `latency_ms`. The compliance matrix shows all nine BasedAI requirements. The P99 latency is a live measurement — well under the 200ms budget, because the permission path is indexed SQL, not a model."
 
-Point to the live P99 value in the Compliance Matrix.
+Point to the live P99 value and the green `PASS` badges.
+Point to one audit row and note the `request_id` column — every decision is traceable.
 
-> "No LLM was called at any point in that permission flow. The model sits outside the boundary. BioVault is the gate."
+> **BasedAI requirement addressed:** Auditability; sub-200ms governance latency.
 
 ---
 
@@ -90,28 +111,31 @@ Point to the live P99 value in the Compliance Matrix.
 
 *Use this if you only have 30 seconds with a judge.*
 
-> "BioVault is a capability-secured artifact memory layer. It does three things RBAC cannot:
+> "BioVault is a capability-secured artifact memory layer for AI science agents. Three things RBAC cannot do:
+>
+> **One** — access is per artifact, not per role. The Phase II readiness memo has its own capability grants, independent of job title. [point to flow banner]
+>
+> **Two** — lineage is tracked. When I revoke this adverse event memo [click Step 4], watch: Phase II memo and everything derived from it is automatically quarantined.
+>
+> **Three** — no model decides any of this. The permission check is pure SQL and Python. An open-weight model — Qwen, Llama, Mistral, whatever — only ever sees content after the permission gate passes."
 
-> **One** — access is per artifact, not per role. The Phase II memo has its own capability grants, independent of job title.
-
-> **Two** — lineage is tracked. When I revoke this adverse event memo — [click Revoke button] — watch: the Phase II memo, which was derived from it, is automatically quarantined.
-
-> **Three** — no model decides any of this. The permission check is pure SQL and Python. The open-weight model — Qwen, Llama, Mistral, whatever you want — only sees content after the permission gate passes."
-
-*(30 seconds, covers the three core differentiators)*
+*(30 seconds, covers capability-bound identity, revocation propagation, and LLM-free governance)*
 
 ---
 
 ## Common judge questions
 
 **Q: How is this different from document-level ACLs?**
-A: ACLs are static. BioVault's lineage check is dynamic — when a source is revoked, every derived artifact is automatically quarantined, no matter how deep the lineage graph is.
+A: ACLs are static and flat. BioVault's lineage check is dynamic — revoking a source propagates quarantine to all derived descendants regardless of depth. ACLs have no concept of "this artifact was built from that artifact."
 
-**Q: What stops a developer from bypassing the token check?**
-A: `resolve_principal()` is a FastAPI dependency on every protected route. The only query string parameter is `?user_id=` for the GET /users listing, which has no authority over access decisions. The tests include `test_user_id_query_param_is_not_authority` that verifies this.
+**Q: What stops someone from bypassing the token check?**
+A: `resolve_principal()` is a FastAPI `Depends()` on every protected route. There is no fallback: no `?user_id=` override, no default principal. The test `test_user_id_query_param_is_not_authority` verifies that passing `?user_id=u_ceo` without a valid token returns HTTP 401, not the CEO's content.
 
 **Q: Can you use a real open-weight model with this?**
-A: Yes. `POST /query` is the agent gate. Pass the bearer token, get plaintext content back if allowed. The model calls this before generating any response. No model is imported in the backend — see `grep -r "openai\|anthropic\|langchain" backend/app/` — it returns nothing.
+A: Yes. `POST /query` is the agent gate. The model calls this endpoint with its bearer token before generating any response. If the decision is `allow`, `plaintext_content` is returned. If `deny`, no content is returned and the model must not generate from that artifact. No model is imported in the backend — `grep -r "openai\|anthropic\|langchain" backend/app/` returns nothing.
 
 **Q: How does governed redaction work?**
-A: Deriving a `redacted` artifact requires the `redact` capability on every parent. Deriving from a revoked source is denied entirely — redaction cannot launder bad data. A redaction attestation records the source hashes and who authorised it.
+A: Creating a `redacted` derived artifact requires the `redact` capability on every parent. Deriving from a revoked source is denied entirely — redaction cannot launder compromised data. A redaction attestation records the source hashes, included/excluded parents, reason, and `request_id` for audit purposes.
+
+**Q: What's the performance cost of lineage integrity checks?**
+A: The lineage check is a depth-first SQL traversal over an indexed `lineage_edges` table. For the demo dataset (8 artifacts, 4 lineage edges), P99 is under 2ms. The test `test_permission_latency_p99_under_200ms` runs 200 permission checks against a seeded dataset and asserts P99 < 200ms.

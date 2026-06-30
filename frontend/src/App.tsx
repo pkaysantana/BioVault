@@ -145,35 +145,43 @@ const SensitivityBadge = ({ sensitivity }: { sensitivity: ArtifactSensitivity })
 const STATIC_CHECKS = [
   {
     label: "Deterministic permission path",
-    detail: "evaluate_access() · pure SQL/Python · test_allow_deny_matrix",
+    detail: "evaluate_access() in pure SQL/Python — no probabilistic component",
+    evidence: "test: test_allow_deny_matrix",
   },
   {
     label: "No LLM in permission path",
-    detail: "Zero model imports in backend/app/main.py · POST /query is the agent gate",
+    detail: "Zero model imports in backend/app/main.py; POST /query is the agent gate",
+    evidence: "code: grep openai|anthropic|langchain returns nothing",
   },
   {
     label: "Capability-bound identity",
-    detail: "Bearer token hashed; ?user_id= ignored · test_user_id_query_param_is_not_authority",
+    detail: "Bearer token SHA-256 hashed; ?user_id= query param has zero authority",
+    evidence: "test: test_user_id_query_param_is_not_authority",
   },
   {
     label: "Grant creation requires issuer authority",
-    detail: "POST /artifacts/{id}/grant · test_unauthorised_grant_denied",
+    detail: "POST /artifacts/{id}/grant checks issuer holds 'grant' operation capability",
+    evidence: "test: test_unauthorised_grant_denied",
   },
   {
     label: "Governed redaction — not a bypass",
-    detail: "redact capability on every parent; revoked source blocks derive · test_redaction_cannot_launder_revoked_source",
+    detail: "'redact' capability required on every parent; revoked source blocks derivation",
+    evidence: "test: test_redaction_cannot_launder_revoked_source",
   },
   {
     label: "Lineage-aware derived artifacts",
-    detail: "lineage_edges + source_hash; included/redacted per edge · GET /lineage/{id}",
+    detail: "lineage_edges stores source_hash + inclusion (included/redacted) per edge",
+    evidence: "test: test_governed_redaction_succeeds_on_healthy_sources",
   },
   {
     label: "Source revocation propagation",
-    detail: "BFS quarantine of all active derived descendants · test_multi_level_revocation_propagation",
+    detail: "BFS quarantine traverses all active descendants on revoke",
+    evidence: "test: test_multi_level_revocation_propagation",
   },
   {
     label: "Audit logs with provenance",
-    detail: "request_id + structured detail JSON on every decision · test_audit_records_all_operation_types",
+    detail: "request_id + structured detail JSON logged on every allow and deny",
+    evidence: "test: test_audit_records_all_operation_types",
   },
 ];
 
@@ -184,7 +192,7 @@ function ComplianceMatrix({ metrics }: { metrics: LatencyMetrics | null }) {
   return (
     <section className="card compliance-card">
       <h2>Compliance Matrix</h2>
-      <p className="compliance-sub">BasedAI Enterprise Memory Governance · live evidence</p>
+      <p className="compliance-sub">BasedAI Enterprise Memory Governance at Scale — every claim is backed by a named test or code reference</p>
       <div className="compliance-list">
         {STATIC_CHECKS.map((c) => (
           <div className="compliance-row" key={c.label}>
@@ -192,6 +200,7 @@ function ComplianceMatrix({ metrics }: { metrics: LatencyMetrics | null }) {
             <div>
               <strong>{c.label}</strong>
               <span className="compliance-detail">{c.detail}</span>
+              <span className="compliance-evidence">{c.evidence}</span>
             </div>
           </div>
         ))}
@@ -202,8 +211,11 @@ function ComplianceMatrix({ metrics }: { metrics: LatencyMetrics | null }) {
           <div>
             <strong>P99 permission check &lt; 200 ms</strong>
             <span className="compliance-detail">
-              Live p99: <strong>{p99Label}</strong>
+              Live: <strong>{p99Label}</strong>
               {metrics && metrics.count > 0 && ` over ${metrics.count} checks`}
+            </span>
+            <span className="compliance-evidence">
+              live: GET /metrics/permission-latency · test: test_permission_latency_p99_under_200ms
             </span>
           </div>
         </div>
@@ -565,7 +577,10 @@ export default function App() {
         </label>
         <div className="user-meta">
           <strong>{selectedUser?.team ?? "—"}</strong>
-          <span>token: {maskedToken}</span>
+          <span className="token-line">
+            capability token:{" "}
+            <code className="token-value">{maskedToken}</code>
+          </span>
         </div>
         <button
           disabled={loading || !selectedArtifactId}
@@ -575,6 +590,9 @@ export default function App() {
         </button>
         <p className="status-line">{loading ? "Working…" : message}</p>
       </section>
+
+      {/* Flow banner — pipeline glance */}
+      <FlowBanner />
 
       {/* Main three-column dashboard */}
       <section className="dashboard">
@@ -600,9 +618,12 @@ export default function App() {
           ))}
         </div>
 
-        {/* Detail panel */}
+        {/* Detail panel — access check result */}
         <div className="card detail-panel">
-          <h2>Selected Artifact</h2>
+          <h2>
+            Access Check
+            <span className="panel-sub">token-authenticated · every attempt logged</span>
+          </h2>
           {artifactResponse ? (
             <>
               <div className={`decision ${artifactResponse.access.decision}`}>
@@ -611,8 +632,8 @@ export default function App() {
                 <small>{artifactResponse.access.latency_ms} ms</small>
               </div>
               <p className="meta">
-                principal: {artifactResponse.principal_id} ·{" "}
-                {artifactResponse.access.request_id}
+                principal: <code>{artifactResponse.principal_id}</code> ·{" "}
+                <code>{artifactResponse.access.request_id}</code>
               </p>
               <h3>{artifactResponse.artifact.title}</h3>
               <div className="artifact-badges" style={{ marginBottom: 12 }}>
@@ -627,8 +648,9 @@ export default function App() {
             </>
           ) : (
             <p className="empty">
-              Select an artifact and click "Open Selected Artifact" to trigger a
-              token-authenticated, logged permission check.
+              Select an artifact and click "Open Selected Artifact".
+              The server will run a deterministic permission check — decide allow/deny —
+              and log the event before returning anything here.
             </p>
           )}
         </div>
@@ -746,6 +768,35 @@ export default function App() {
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+
+/**
+ * Narrow banner that makes the request pipeline visible at a glance.
+ * A judge who has never seen BioVault should be able to read:
+ *   token → principal resolution → permission check → audit → decrypt
+ * in under 5 seconds.
+ */
+function FlowBanner() {
+  const steps = [
+    { label: "Bearer token", sub: "principal identity" },
+    { label: "resolve_principal()", sub: "SHA-256 lookup" },
+    { label: "evaluate_access()", sub: "SQL / no model" },
+    { label: "log_audit()", sub: "every decision" },
+    { label: "Decrypt content", sub: "allow only" },
+  ];
+  return (
+    <div className="flow-banner" aria-label="Permission request flow">
+      {steps.map((s, i) => (
+        <div key={s.label} className="flow-banner-inner">
+          <div className={`flow-node${i === steps.length - 1 ? " flow-node-gate" : ""}`}>
+            <span className="flow-node-label">{s.label}</span>
+            <span className="flow-node-sub">{s.sub}</span>
+          </div>
+          {i < steps.length - 1 && <span className="flow-arrow">→</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function SimpleLineageList({ artifacts, empty }: { artifacts: Artifact[]; empty: string }) {
   if (artifacts.length === 0) return <p className="empty">{empty}</p>;
