@@ -143,22 +143,59 @@ const SensitivityBadge = ({ sensitivity }: { sensitivity: ArtifactSensitivity })
 // ---------------------------------------------------------------------------
 
 const STATIC_CHECKS = [
-  { label: "Deterministic permission path",       detail: "evaluate_access() in pure Python/SQL, no probabilistic component" },
-  { label: "No LLM in permission path",           detail: "Zero model calls between request and allow/deny" },
-  { label: "Capability-bound identity",           detail: "Bearer token hashed + stored; user_id query param has no authority" },
-  { label: "Audit log on every access attempt",  detail: "log_audit() called for read, derive, revoke, grant — all results" },
-  { label: "Lineage-aware derived artifacts",     detail: "Transitive source status checked before granting access to derived" },
-  { label: "Source revocation propagation",       detail: "BFS quarantine of all active derived descendants on revoke" },
+  {
+    label: "Deterministic permission path",
+    detail: "evaluate_access() is pure Python/SQL — no probabilistic component, same input always yields same decision",
+    evidence: "test_allow_deny_matrix",
+  },
+  {
+    label: "No LLM in permission path",
+    detail: "Zero model calls between request and allow/deny; open-weight models only receive already-authorised content",
+    evidence: "grep -r 'openai\\|anthropic' backend/ → 0 matches",
+  },
+  {
+    label: "Capability-bound identity",
+    detail: "Bearer token hashed + stored; ?user_id= query param carries no authority — spoofing is rejected",
+    evidence: "test_user_id_query_param_is_not_authority",
+  },
+  {
+    label: "Grant creation requires issuer authority",
+    detail: "POST /artifacts/{id}/grant checks issuer grant capability; logs grant_id, issuer, subject, scope, purpose",
+    evidence: "test_unauthorised_grant_denied",
+  },
+  {
+    label: "Governed redaction — no bypass",
+    detail: "redact capability required on every parent; redaction from revoked source is denied at the API layer",
+    evidence: "test_redaction_cannot_launder_revoked_source",
+  },
+  {
+    label: "Lineage-aware derived artifacts",
+    detail: "Transitive source status checked before every derived-artifact read; each edge stores source_hash + inclusion",
+    evidence: "GET /lineage/{id} → parents[].inclusion, source_hash",
+  },
+  {
+    label: "Source revocation propagation",
+    detail: "BFS quarantine reaches all active derived descendants; audit event written per quarantined artifact",
+    evidence: "test_multi_level_revocation_propagation",
+  },
+  {
+    label: "Audit log with provenance",
+    detail: "Every read/derive/revoke/grant produces an audit event with request_id + structured detail JSON",
+    evidence: "test_audit_records_all_operation_types",
+  },
 ];
 
 function ComplianceMatrix({ metrics }: { metrics: LatencyMetrics | null }) {
   const p99Pass = metrics && metrics.count > 0 ? metrics.p99_ms < 200 : null;
-  const p99Label = metrics && metrics.count > 0 ? `${metrics.p99_ms} ms` : "Run demo steps first";
+  const p99Label =
+    metrics && metrics.count > 0 ? `${metrics.p99_ms} ms` : "Run demo steps first";
 
   return (
     <section className="card compliance-card">
       <h2>Compliance Matrix</h2>
-      <p className="compliance-sub">BasedAI Enterprise Memory Governance · live evidence</p>
+      <p className="compliance-sub">
+        BasedAI Enterprise Memory Governance at Scale · live evidence
+      </p>
       <div className="compliance-list">
         {STATIC_CHECKS.map((c) => (
           <div className="compliance-row" key={c.label}>
@@ -166,19 +203,25 @@ function ComplianceMatrix({ metrics }: { metrics: LatencyMetrics | null }) {
             <div>
               <strong>{c.label}</strong>
               <span className="compliance-detail">{c.detail}</span>
+              <code className="compliance-evidence">{c.evidence}</code>
             </div>
           </div>
         ))}
+        {/* P99 row is live */}
         <div className="compliance-row">
-          <span className={`pass-badge ${p99Pass === false ? "fail" : ""}`}>
+          <span className={`pass-badge${p99Pass === false ? " fail" : ""}`}>
             {p99Pass === null ? "—" : p99Pass ? "PASS" : "FAIL"}
           </span>
           <div>
             <strong>P99 permission check &lt; 200 ms</strong>
             <span className="compliance-detail">
-              Live p99: <strong>{p99Label}</strong>
+              Indexed SQLite lookups; budget 200 ms; live p99:{" "}
+              <strong>{p99Label}</strong>
               {metrics && metrics.count > 0 && ` over ${metrics.count} checks`}
             </span>
+            <code className="compliance-evidence">
+              test_permission_latency_p99_under_200ms · GET /metrics/permission-latency
+            </code>
           </div>
         </div>
       </div>
@@ -206,6 +249,11 @@ const CONCEPTS = [
     title: "Revocation cascades downstream",
     body: "Revoking a source quarantines all downstream derived artifacts. The propagation is deterministic BFS — no polling, no eventual consistency.",
   },
+  {
+    icon: "⬡",
+    title: "Models only see authorised context",
+    body: "Open-weight models (Qwen, Llama, Mistral, GLM, BGE, E5, Nomic) may be used after authorisation. No model is used in the permission path — the gate runs before any model sees the content.",
+  },
 ];
 
 function ConceptCards() {
@@ -223,29 +271,39 @@ function ConceptCards() {
 }
 
 // ---------------------------------------------------------------------------
-// Demo steps (5-step judge flow)
+// Demo steps (6-step judge flow matching the spec)
 // ---------------------------------------------------------------------------
 
 const DEMO_STEPS = [
   {
-    label: "CEO opens Phase II memo",
-    description: "Expect: ALLOW — CEO holds read capability, sources healthy",
+    label: "CEO reads Phase II memo",
+    description: "ALLOW — capability_and_lineage_valid; content decrypts",
+    user: "u_ceo",
   },
   {
-    label: "CRO attempts Phase II memo",
-    description: "Expect: DENY — missing_capability_grant",
+    label: "External CRO attempts Phase II memo",
+    description: "DENY — missing_capability_grant; content withheld",
+    user: "u_cro",
+  },
+  {
+    label: "Regulatory Lead reads Phase II memo",
+    description: "ALLOW — has read grant; all sources healthy",
+    user: "u_regulatory",
   },
   {
     label: "Revoke Adverse Event Memo",
-    description: "Derives exec brief first, then revokes — cascades quarantine",
+    description: "Derives exec brief from Phase II first, then revokes — quarantine cascades",
+    user: "u_ceo",
   },
   {
     label: "Inspect quarantined artifacts",
-    description: "Phase II memo + exec brief both quarantined, reads denied",
+    description: "Phase II memo + exec brief both quarantined; reads denied",
+    user: "u_ceo",
   },
   {
     label: "Audit log & latency evidence",
-    description: "Every decision logged; P99 shown in compliance matrix",
+    description: "Every decision logged with principal, reason, request_id, latency",
+    user: null,
   },
 ];
 
@@ -421,14 +479,22 @@ export default function App() {
     setActiveStep(i);
     try {
       if (i === 0) {
+        // Step 1 — CEO opens Phase II memo: ALLOW
         await openArtifact("phase2_readiness_memo", "u_ceo");
       } else if (i === 1) {
+        // Step 2 — External CRO attempts Phase II memo: DENY
         await openArtifact("phase2_readiness_memo", "u_cro");
       } else if (i === 2) {
-        await revokeWithCascade();
+        // Step 3 — Regulatory Lead opens Phase II memo: ALLOW
+        await openArtifact("phase2_readiness_memo", "u_regulatory");
       } else if (i === 3) {
-        await showQuarantineState();
+        // Step 4 — Revoke adverse-event memo (derives exec brief first for cascade demo)
+        await revokeWithCascade();
       } else if (i === 4) {
+        // Step 5 — Show Phase II + downstream quarantined
+        await showQuarantineState();
+      } else if (i === 5) {
+        // Step 6 — Show audit log + latency evidence
         await showAuditEvidence();
       }
       setCompletedSteps((prev) => new Set([...prev, i]));
