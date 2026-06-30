@@ -68,6 +68,7 @@ type AuditEvent = {
   reason: string;
   latency_ms: number;
   request_id?: string;
+  detail?: string | Record<string, unknown> | null;
 };
 
 type LatencyMetrics = {
@@ -139,64 +140,104 @@ const SensitivityBadge = ({ sensitivity }: { sensitivity: ArtifactSensitivity })
 );
 
 // ---------------------------------------------------------------------------
-// Compliance matrix — judge-facing, P99 is live
+// Compliance matrix — judge-facing; P99 and two rows are live-verified
 // ---------------------------------------------------------------------------
 
-const STATIC_CHECKS = [
+type CheckBadge = "TESTED" | "CODE EVIDENCE";
+
+const STATIC_CHECKS: Array<{
+  label: string;
+  detail: string;
+  evidence: string;
+  badge: CheckBadge;
+  liveKey?: "audit" | "revocation";
+}> = [
   {
     label: "Deterministic permission path",
     detail: "evaluate_access() in pure SQL/Python — no probabilistic component",
     evidence: "test: test_allow_deny_matrix",
+    badge: "TESTED",
   },
   {
     label: "No LLM in permission path",
     detail: "Zero model imports in backend/app/main.py; POST /query is the agent gate",
     evidence: "code: grep openai|anthropic|langchain returns nothing",
+    badge: "CODE EVIDENCE",
   },
   {
     label: "Capability-bound identity",
     detail: "Bearer token SHA-256 hashed; ?user_id= query param has zero authority",
     evidence: "test: test_user_id_query_param_is_not_authority",
+    badge: "TESTED",
   },
   {
     label: "Grant creation requires issuer authority",
     detail: "POST /artifacts/{id}/grant checks issuer holds 'grant' operation capability",
     evidence: "test: test_unauthorised_grant_denied",
+    badge: "TESTED",
   },
   {
     label: "Governed redaction — not a bypass",
     detail: "'redact' capability required on every parent; revoked source blocks derivation",
     evidence: "test: test_redaction_cannot_launder_revoked_source",
+    badge: "TESTED",
   },
   {
     label: "Lineage-aware derived artifacts",
     detail: "lineage_edges stores source_hash + inclusion (included/redacted) per edge",
     evidence: "test: test_governed_redaction_succeeds_on_healthy_sources",
+    badge: "TESTED",
   },
   {
     label: "Source revocation propagation",
     detail: "BFS quarantine traverses all active descendants on revoke",
     evidence: "test: test_multi_level_revocation_propagation",
+    badge: "TESTED",
+    liveKey: "revocation",
   },
   {
     label: "Audit logs with provenance",
     detail: "request_id + structured detail JSON logged on every allow and deny",
     evidence: "test: test_audit_records_all_operation_types",
+    badge: "TESTED",
+    liveKey: "audit",
   },
 ];
 
-function ComplianceMatrix({ metrics }: { metrics: LatencyMetrics | null }) {
+function ComplianceMatrix({
+  metrics,
+  auditCount,
+  hasQuarantined,
+}: {
+  metrics: LatencyMetrics | null;
+  auditCount: number;
+  hasQuarantined: boolean;
+}) {
   const p99Pass = metrics && metrics.count > 0 ? metrics.p99_ms < 200 : null;
-  const p99Label = metrics && metrics.count > 0 ? `${metrics.p99_ms} ms` : "Run demo steps first";
+  const p99Label =
+    metrics && metrics.count > 0 ? `${metrics.p99_ms} ms` : "Run demo steps first";
+
+  function renderBadge(c: (typeof STATIC_CHECKS)[number]) {
+    if (c.liveKey === "revocation" && hasQuarantined)
+      return <span className="pass-badge live">LIVE</span>;
+    if (c.liveKey === "audit" && auditCount > 0)
+      return <span className="pass-badge live">LIVE</span>;
+    if (c.badge === "CODE EVIDENCE")
+      return <span className="pass-badge code-ev">CODE</span>;
+    return <span className="pass-badge tested">TESTED</span>;
+  }
 
   return (
     <section className="card compliance-card">
       <h2>Compliance Matrix</h2>
-      <p className="compliance-sub">BasedAI Enterprise Memory Governance at Scale — every claim is backed by a named test or code reference</p>
+      <p className="compliance-sub">
+        BasedAI Enterprise Memory Governance at Scale — every claim is backed by a named test or
+        code reference
+      </p>
       <div className="compliance-list">
         {STATIC_CHECKS.map((c) => (
           <div className="compliance-row" key={c.label}>
-            <span className="pass-badge">PASS</span>
+            {renderBadge(c)}
             <div>
               <strong>{c.label}</strong>
               <span className="compliance-detail">{c.detail}</span>
@@ -205,7 +246,9 @@ function ComplianceMatrix({ metrics }: { metrics: LatencyMetrics | null }) {
           </div>
         ))}
         <div className="compliance-row">
-          <span className={`pass-badge ${p99Pass === false ? "fail" : ""}`}>
+          <span
+            className={`pass-badge${p99Pass === null ? " pending" : p99Pass ? "" : " fail"}`}
+          >
             {p99Pass === null ? "—" : p99Pass ? "PASS" : "FAIL"}
           </span>
           <div>
@@ -316,6 +359,9 @@ export default function App() {
   const [activeStep, setActiveStep] = useState<number | null>(null);
   // grandchild derived during step 3 so step 4 can display it quarantined
   const [grandchildId, setGrandchildId] = useState<string | null>(null);
+  const [expandedAuditId, setExpandedAuditId] = useState<string | null>(null);
+  const [proofResult, setProofResult] = useState<Record<string, unknown> | null>(null);
+  const [proofLoading, setProofLoading] = useState(false);
 
   const selectedUser = useMemo(
     () => users.find((u) => u.id === selectedUserId),
@@ -486,6 +532,46 @@ export default function App() {
     }
   }
 
+  async function proofInternSelfGrant() {
+    setProofLoading(true);
+    try {
+      const r = await postJson<Record<string, unknown>>(
+        "/artifacts/internal_sar_table/grant",
+        { subject_user_id: "u_intern", operation: "read", purpose: "self-escalation-attempt" },
+        tokenFor("u_intern"),
+      );
+      setProofResult({ proof: "intern_self_grant", ...r });
+      await refresh();
+    } catch (e) {
+      setProofResult({ error: (e as Error).message });
+    } finally {
+      setProofLoading(false);
+    }
+  }
+
+  async function proofCEORedaction() {
+    setProofLoading(true);
+    try {
+      const r = await postJson<Record<string, unknown>>(
+        "/derive",
+        {
+          title: "Security Proof: CEO Governed Redaction",
+          parent_artifact_ids: ["public_target_paper", "internal_sar_table"],
+          redacted: true,
+          redact_parent_ids: [],
+          reason: "security_proof_governed_redaction",
+        },
+        tokenFor("u_ceo"),
+      );
+      setProofResult({ proof: "ceo_governed_redaction", ...r });
+      await refresh();
+    } catch (e) {
+      setProofResult({ error: (e as Error).message });
+    } finally {
+      setProofLoading(false);
+    }
+  }
+
   useEffect(() => {
     seedDemo();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -528,7 +614,11 @@ export default function App() {
       </header>
 
       {/* Compliance matrix */}
-      <ComplianceMatrix metrics={metrics} />
+      <ComplianceMatrix
+        metrics={metrics}
+        auditCount={audit.length}
+        hasQuarantined={artifacts.some((a) => a.status === "quarantined")}
+      />
 
       {/* Concept cards */}
       <ConceptCards />
@@ -728,10 +818,41 @@ export default function App() {
         </section>
       )}
 
+      {/* Security Proofs — optional bonus demo, not required for 2-min flow */}
+      <section className="card proof-card">
+        <h2>Security Proofs</h2>
+        <p className="compliance-sub">
+          On-demand evidence. These do not block the main demo — run them to show specific security
+          properties live. Every action is audited.
+        </p>
+        <div className="proof-buttons">
+          <button
+            className="btn-secondary"
+            disabled={proofLoading || !tokens["u_intern"]}
+            onClick={proofInternSelfGrant}
+            title="Intern attempts to grant themselves read on the SAR table — must be denied"
+          >
+            Proof 1 — Intern self-grant attempt (expect DENY)
+          </button>
+          <button
+            className="btn-primary"
+            disabled={proofLoading || !tokens["u_ceo"]}
+            onClick={proofCEORedaction}
+            title="CEO creates a governed redacted derivation — must produce redaction attestation"
+          >
+            Proof 2 — CEO governed redaction (expect attestation_id)
+          </button>
+        </div>
+        {proofResult && (
+          <pre className="proof-result">{JSON.stringify(proofResult, null, 2)}</pre>
+        )}
+      </section>
+
       {/* Audit log */}
       <section className="card audit-card">
         <h2>
           Audit Log <span className="audit-count">{audit.length} events</span>
+          <span className="audit-hint">click row to expand provenance</span>
         </h2>
         <div className="audit-table">
           <div className="audit-grid header">
@@ -741,17 +862,35 @@ export default function App() {
             <span>Op</span>
             <span>Decision</span>
             <span>Reason</span>
+            <span>Req ID</span>
             <span>Latency</span>
           </div>
           {audit.map((ev) => (
-            <div className="audit-grid" key={ev.id}>
-              <span>{new Date(ev.timestamp).toLocaleTimeString()}</span>
-              <span>{ev.user_id}</span>
-              <span className="audit-artifact">{ev.artifact_id}</span>
-              <span>{ev.operation}</span>
-              <span className={ev.decision}>{ev.decision}</span>
-              <span className="audit-reason">{ev.reason}</span>
-              <span>{ev.latency_ms} ms</span>
+            <div className="audit-row-group" key={ev.id}>
+              <div
+                className={`audit-grid audit-row-clickable${expandedAuditId === ev.id ? " audit-row-open" : ""}`}
+                onClick={() =>
+                  setExpandedAuditId(expandedAuditId === ev.id ? null : ev.id)
+                }
+              >
+                <span>{new Date(ev.timestamp).toLocaleTimeString()}</span>
+                <span>{ev.user_id}</span>
+                <span className="audit-artifact">{ev.artifact_id}</span>
+                <span>{ev.operation}</span>
+                <span className={ev.decision}>{ev.decision}</span>
+                <span className="audit-reason">{ev.reason}</span>
+                <span className="audit-reqid">
+                  {ev.request_id ? (
+                    <code title={ev.request_id}>
+                      …{ev.request_id.slice(-8)}
+                    </code>
+                  ) : (
+                    "—"
+                  )}
+                </span>
+                <span>{ev.latency_ms} ms</span>
+              </div>
+              {expandedAuditId === ev.id && <AuditDetailRow event={ev} />}
             </div>
           ))}
           {audit.length === 0 && (
@@ -828,6 +967,76 @@ function MetricTile({
     <div className={`metric-tile${accent ? ` metric-${accent}` : ""}`}>
       <span className="metric-value">{value}</span>
       <span className="metric-label">{label}</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Audit detail row — expandable structured provenance for each audit event
+// ---------------------------------------------------------------------------
+
+const DETAIL_KEYS = [
+  "purpose",
+  "grant_id",
+  "issuer",
+  "subject",
+  "scope",
+  "principal",
+  "operation",
+  "source_hash",
+  "artifact_hash",
+  "dependency_type",
+  "created_by",
+  "lineage_checked",
+  "lineage_decision",
+  "propagated_from",
+  "attestation_id",
+  "included",
+  "redacted",
+  "revoked_parents",
+] as const;
+
+function AuditDetailRow({ event }: { event: AuditEvent }) {
+  let parsed: Record<string, unknown> | null = null;
+  if (event.detail) {
+    if (typeof event.detail === "string") {
+      try {
+        parsed = JSON.parse(event.detail) as Record<string, unknown>;
+      } catch {
+        parsed = null;
+      }
+    } else {
+      parsed = event.detail as Record<string, unknown>;
+    }
+  }
+
+  const entries = parsed
+    ? (DETAIL_KEYS as readonly string[])
+        .filter((k) => k in parsed! && parsed![k] !== undefined && parsed![k] !== null)
+        .map((k) => [k, parsed![k]] as [string, unknown])
+    : [];
+
+  return (
+    <div className="audit-detail-row">
+      <div className="audit-detail-field">
+        <span className="audit-detail-key">request_id</span>
+        <code className="audit-detail-val">{event.request_id ?? "—"}</code>
+      </div>
+      {entries.length > 0 ? (
+        entries.map(([k, v]) => (
+          <div className="audit-detail-field" key={k}>
+            <span className="audit-detail-key">{k}</span>
+            <span className="audit-detail-val">
+              {Array.isArray(v) ? v.join(", ") || "—" : String(v)}
+            </span>
+          </div>
+        ))
+      ) : (
+        <div className="audit-detail-field">
+          <span className="audit-detail-key">detail</span>
+          <span className="audit-detail-val">—</span>
+        </div>
+      )}
     </div>
   );
 }

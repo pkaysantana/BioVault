@@ -425,6 +425,25 @@ def has_grant(
     return grant is not None
 
 
+def find_grant_id(
+    conn: sqlite3.Connection, user_id: str, artifact_id: str, operation: Operation
+) -> str | None:
+    """Return the id of the capability grant that would be (or was) used for this access."""
+    row = conn.execute(
+        """
+        SELECT id FROM capability_grants
+        WHERE user_id = ?
+          AND artifact_id = ?
+          AND operation = ?
+          AND revoked = 0
+          AND (expires_at IS NULL OR expires_at > ?)
+        LIMIT 1
+        """,
+        (user_id, artifact_id, operation, now_iso()),
+    ).fetchone()
+    return row["id"] if row else None
+
+
 # ---------------------------------------------------------------------------
 # Permission engine — deterministic, no LLM
 # ---------------------------------------------------------------------------
@@ -516,14 +535,36 @@ def log_audit(
 
 
 def can_access(
-    user_id: str, artifact_id: str, operation: Operation, request_id: str | None = None
+    user_id: str,
+    artifact_id: str,
+    operation: Operation,
+    request_id: str | None = None,
+    purpose: str = "unspecified",
 ) -> dict[str, Any]:
     rid = request_id or new_request_id()
     start = time.perf_counter()
     with connect() as conn:
         decision, reason = evaluate_access(conn, user_id, artifact_id, operation)
         latency_ms = round((time.perf_counter() - start) * 1000, 3)
-        log_audit(conn, user_id, artifact_id, operation, decision, reason, latency_ms, rid)
+
+        # Structured provenance detail — logged on every access event.
+        # Does not influence the decision; purely for audit trail quality.
+        detail: dict[str, Any] = {
+            "request_id": rid,
+            "purpose": purpose,
+            "principal": user_id,
+            "operation": operation,
+        }
+        if decision == "allow":
+            grant_id = find_grant_id(conn, user_id, artifact_id, operation)
+            if grant_id:
+                detail["grant_id"] = grant_id
+        artifact_row = get_artifact(conn, artifact_id)
+        if artifact_row and artifact_row["type"] == "derived":
+            detail["lineage_checked"] = True
+            detail["lineage_decision"] = "passed" if decision == "allow" else reason
+
+        log_audit(conn, user_id, artifact_id, operation, decision, reason, latency_ms, rid, detail)
         return {"decision": decision, "reason": reason, "latency_ms": latency_ms, "request_id": rid}
 
 
@@ -678,7 +719,7 @@ def read_artifact(
     artifact_id: str, principal_id: str = Depends(resolve_principal)
 ) -> dict[str, Any]:
     # Identity comes from the token (principal_id), never a query param.
-    result = can_access(principal_id, artifact_id, "read")
+    result = can_access(principal_id, artifact_id, "read", purpose="artifact_read")
     with connect() as conn:
         row = get_artifact(conn, artifact_id)
         if not row:
@@ -795,7 +836,7 @@ def query_artifact(
     pattern.
     """
     rid = new_request_id()
-    result = can_access(principal_id, request.artifact_id, "read", rid)
+    result = can_access(principal_id, request.artifact_id, "read", rid, purpose=request.purpose)
 
     response: dict[str, Any] = {
         "decision": result["decision"],

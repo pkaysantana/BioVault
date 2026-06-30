@@ -98,12 +98,16 @@ Point to the amber `quarantined` badges in the **Artifacts** panel.
 
 Click **Step 6**, then scroll to the **Compliance Matrix** and **Audit Log**.
 
-> "Every decision — allow, deny, revoke, derive — is recorded with a `request_id`, `principal_id`, `reason`, and `latency_ms`. The compliance matrix shows all nine BasedAI requirements. The P99 latency is a live measurement — well under the 200ms budget, because the permission path is indexed SQL, not a model."
+> "Every decision — allow, deny, revoke, derive — is recorded as a structured audit event. The `Req ID` column shows a truncated `request_id` for each row. Click any audit row to expand its structured provenance: `purpose`, `grant_id` (the specific capability grant that was used), `principal`, `lineage_checked`, and `lineage_decision`. Grant and revoke events also carry `issuer`, `subject`, `scope`, and `attestation_id`."
 
-Point to the live P99 value and the green `PASS` badges.
-Point to one audit row and note the `request_id` column — every decision is traceable.
+Point to the `Req ID` column — every decision is traceable by ID.
+Click one audit row to expand it. Point to `grant_id` and `purpose` in the detail.
 
-> **BasedAI requirement addressed:** Auditability; sub-200ms governance latency.
+> "The compliance matrix now shows the nature of each claim. TESTED rows are backed by a named pytest. CODE rows are backed by a static code inspection. The two LIVE rows — revocation propagation and audit logs with provenance — flip to LIVE when you can see the evidence live in this session. P99 is a live measurement — well under the 200ms budget, because the permission path is indexed SQL, not a model."
+
+Point to the TESTED / CODE / LIVE / PASS badges. Point to the live P99 value.
+
+> **BasedAI requirement addressed:** Auditability with structured provenance; sub-200ms governance latency.
 
 ---
 
