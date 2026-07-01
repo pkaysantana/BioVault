@@ -29,15 +29,7 @@ def client():
 @pytest.fixture()
 def seeded(client):
     """Seed the biotech dataset and return the plaintext principal token map."""
-    resp = client.post("/seed?scenario=biotech")
-    assert resp.status_code == 200
-    return resp.json()["tokens"]
-
-
-@pytest.fixture()
-def seeded_sme(client):
-    """Seed the SME company-memory dataset and return the plaintext principal token map."""
-    resp = client.post("/seed?scenario=sme")
+    resp = client.post("/seed")
     assert resp.status_code == 200
     return resp.json()["tokens"]
 

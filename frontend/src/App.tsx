@@ -10,8 +10,6 @@ const API_BASE_URL =
 // Types
 // ---------------------------------------------------------------------------
 
-type Scenario = "sme" | "biotech";
-
 type User = { id: string; name: string; role: string; team: string };
 
 type ArtifactStatus = "active" | "revoked" | "quarantined" | "redacted";
@@ -197,14 +195,14 @@ const STATIC_CHECKS: Array<{
   {
     label: "Source revocation propagation",
     detail: "BFS quarantine traverses all active descendants on revoke",
-    evidence: "test: test_multi_level_revocation_propagation + test_sme_payroll_revocation_quarantines_derived_report",
+    evidence: "test: test_multi_level_revocation_propagation + test_adverse_event_revocation_quarantines_phase2_memo",
     badge: "TESTED",
     liveKey: "revocation",
   },
   {
     label: "Audit logs with provenance",
     detail: "request_id + structured detail JSON logged on every allow and deny",
-    evidence: "test: test_audit_records_all_operation_types + test_sme_audit_records_request_id_purpose_principal_operation_artifact",
+    evidence: "test: test_audit_records_all_operation_types + test_artifact_read_audit_contains_structured_detail",
     badge: "TESTED",
     liveKey: "audit",
   },
@@ -324,34 +322,34 @@ function ComparisonCards() {
       <h2>Why Not the Alternatives?</h2>
       <div className="comparison-grid">
         <div className="comparison-col comparison-old">
-          <div className="comparison-header">⚠ Old approach: duplicate into team silos</div>
+          <div className="comparison-header">⚠ Old approach: duplicate into lab / CRO / regulatory silos</div>
           <p>
-            Finance and Marketing each get a copy of shared files. Changes don't sync.
-            A payroll file copied into a "shared" folder becomes invisible to governance.
-            Silo drift makes revocation impossible to enforce — you cannot revoke a copy you don't know exists.
+            Clinical files copied into partner folders, board packs, and CRO workspaces. Revoke the
+            canonical adverse-event source — stale copies persist. External collaborators read derived
+            memos built from data you thought was sealed. Silo drift makes revocation unenforceable.
           </p>
         </div>
         <div className="comparison-col comparison-new">
-          <div className="comparison-header">✓ BioVault: one global artifact memory</div>
+          <div className="comparison-header">✓ BioVault: one shared scientific memory</div>
           <p>
-            A single canonical store. Every team reads the same artifact under their own capability grant.
-            No copies, no drift. Revoking payroll propagates instantly to every derived artifact
-            that included it — through lineage, not by chasing copies.
+            A single canonical R&D artifact store. Research, Regulatory, and CRO each read under their
+            own capability grant. Revoking adverse_event_memo propagates through lineage to every derived
+            Phase II memo — deterministically, before any retrieval reaches a model.
           </p>
         </div>
         <div className="comparison-col comparison-old">
           <div className="comparison-header">⚠ Old approach: LLM sensitivity filtering</div>
           <p>
-            Route every retrieval through a model to classify sensitivity and decide access.
-            Token-heavy, latency compounds with document volume, and models can be confused or
-            prompted into surfacing revoked content. Sensitivity "filtering" is not a security boundary.
+            Route every retrieval of clinical or scientific content through a model to classify
+            sensitivity. Extra model calls, compounding latency, and models can be prompted into
+            surfacing revoked context. Not a security boundary for regulated R&D memory.
           </p>
         </div>
         <div className="comparison-col comparison-new">
           <div className="comparison-header">✓ BioVault: 0 model tokens in permission path</div>
           <p>
             Permission checks are pure SQL — deterministic, sub-millisecond, audited on every attempt.
-            The model only sees content that has already passed the capability check.
+            Optional open-weight generation runs only after authorization — never to decide access.
           </p>
           <div className="zero-tokens-badge">
             <span className="zero-tokens-num">0</span>
@@ -364,68 +362,41 @@ function ComparisonCards() {
 }
 
 // ---------------------------------------------------------------------------
-// Demo steps — two scenarios
+// Demo steps — BVK-14 biotech guided demo
 // ---------------------------------------------------------------------------
 
-const SME_DEMO_STEPS = [
+const DEMO_STEPS = [
   {
-    label: "Marketing opens Campaign Cost Summary",
-    description: "ALLOW — Marketing holds read capability on campaign_cost_summary",
-  },
-  {
-    label: "Marketing attempts Q3 Growth Margin Report",
-    description: "DENY — missing_capability_grant; payroll-mixed report withheld, no content returned",
-  },
-  {
-    label: "Finance opens Q3 Growth Margin Report",
-    description: "ALLOW — Finance holds read capability; lineage healthy, content decrypted",
-  },
-  {
-    label: "Inspect lineage of Q3 Growth Margin Report",
-    description: "campaign_cost_summary + vendor_contracts + payroll_salary_register → q3_growth_margin_report",
-  },
-  {
-    label: "Owner revokes Payroll Salary Register",
-    description: "Revocation propagates through lineage — q3_growth_margin_report quarantined",
-  },
-  {
-    label: "Q3 Growth Margin Report shows quarantined",
-    description: "Amber badge on derived artifact; lineage dependency on revoked payroll data",
-  },
-  {
-    label: "Finance opens Q3 Growth Margin Report again",
-    description: "DENY — derived_from_revoked_source; Finance can no longer access the report",
-  },
-  {
-    label: "Audit log & evidence",
-    description: "Every decision logged with request_id, principal, artifact, operation, reason, latency",
-  },
-];
-
-const BIOTECH_DEMO_STEPS = [
-  {
-    label: "CEO opens Phase II readiness memo",
-    description: "ALLOW — CEO holds read capability; all source artifacts active",
+    label: "Regulatory Lead opens Phase II readiness memo",
+    description: "ALLOW — Regulatory holds read capability; all source artifacts active",
   },
   {
     label: "External CRO attempts Phase II memo",
-    description: "DENY — missing_capability_grant; content withheld",
+    description: "DENY — missing_capability_grant; no clinical plaintext returned",
   },
   {
-    label: "Regulatory Lead opens Phase II memo",
-    description: "ALLOW — has read grant; source integrity valid",
+    label: "Inspect lineage of Phase II memo",
+    description: "public_target_paper + internal_sar_table + toxicity_report + adverse_event_memo → phase2_readiness_memo",
   },
   {
-    label: "Revoke Adverse Event Memo",
-    description: "Derives exec brief first, then revokes — quarantine cascades to both",
+    label: "CEO revokes Adverse Event Memo",
+    description: "Derives exec brief, then revokes source — quarantine cascades to descendants",
   },
   {
-    label: "Phase II memo & derived artifacts quarantined",
-    description: "DENY — derived_from_revoked_source; amber badges on affected rows",
+    label: "Phase II memo shows quarantined",
+    description: "Amber badge; derived artifacts sealed by revoked lineage",
   },
   {
-    label: "Audit log & latency evidence",
-    description: "Every decision logged; live P99 in compliance matrix",
+    label: "CEO opens Phase II memo again",
+    description: "DENY — derived_from_revoked_source; no plaintext",
+  },
+  {
+    label: "Review audit log",
+    description: "request_id, principal, artifact, operation, decision, reason, purpose, latency",
+  },
+  {
+    label: "Permission path evidence",
+    description: "Deterministic SQL check · 0 model tokens · open-weight models only after authorization",
   },
 ];
 
@@ -434,14 +405,13 @@ const BIOTECH_DEMO_STEPS = [
 // ---------------------------------------------------------------------------
 
 export default function App() {
-  const [scenario, setScenario] = useState<Scenario>("sme");
   const [users, setUsers] = useState<User[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [metrics, setMetrics] = useState<LatencyMetrics | null>(null);
   const [tokens, setTokens] = useState<Record<string, string>>({});
-  const [selectedUserId, setSelectedUserId] = useState("u_marketing");
-  const [selectedArtifactId, setSelectedArtifactId] = useState("campaign_cost_summary");
+  const [selectedUserId, setSelectedUserId] = useState("u_regulatory");
+  const [selectedArtifactId, setSelectedArtifactId] = useState("phase2_readiness_memo");
   const [artifactResponse, setArtifactResponse] = useState<ArtifactResponse | null>(null);
   const [lineage, setLineage] = useState<LineageResponse | null>(null);
   const [message, setMessage] = useState("Loading demo data…");
@@ -453,8 +423,6 @@ export default function App() {
   const [expandedAuditId, setExpandedAuditId] = useState<string | null>(null);
   const [proofResult, setProofResult] = useState<Record<string, unknown> | null>(null);
   const [proofLoading, setProofLoading] = useState(false);
-
-  const activeSteps = scenario === "sme" ? SME_DEMO_STEPS : BIOTECH_DEMO_STEPS;
 
   const selectedUser = useMemo(
     () => users.find((u) => u.id === selectedUserId),
@@ -479,35 +447,23 @@ export default function App() {
     setLineage(await getJson<LineageResponse>(`/lineage/${artifactId}`));
   }, []);
 
-  async function seedDemo(scen: Scenario = scenario) {
+  async function seedDemo() {
     setLoading(true);
     try {
-      const res = await postJson<SeedResponse>(`/seed?scenario=${scen}`, {});
+      const res = await postJson<SeedResponse>("/seed", {});
       setTokens(res.tokens);
       setGrandchildId(null);
       setCompletedSteps(new Set());
       setActiveStep(null);
       setArtifactResponse(null);
       setProofResult(null);
-
-      if (scen === "sme") {
-        setSelectedUserId("u_marketing");
-        setSelectedArtifactId("campaign_cost_summary");
-        await refresh();
-        await loadLineage("q3_growth_margin_report");
-        setMessage(
-          "SME demo seeded — 6 principals, 6 artifacts. " +
-            "Marketing holds campaign and vendor access but must NOT receive the payroll-mixed Q3 report. Click Step 1 →",
-        );
-      } else {
-        setSelectedUserId("u_ceo");
-        setSelectedArtifactId("phase2_readiness_memo");
-        await refresh();
-        await loadLineage("phase2_readiness_memo");
-        setMessage(
-          "AI Science demo seeded — 6 principals, 8 artifacts, capability grants loaded. Click Step 1 →",
-        );
-      }
+      setSelectedUserId("u_regulatory");
+      setSelectedArtifactId("phase2_readiness_memo");
+      await refresh();
+      await loadLineage("phase2_readiness_memo");
+      setMessage(
+        "BVK-14 demo seeded — 6 principals, 8 artifacts, capability grants loaded. Click Step 1 →",
+      );
       return res.tokens;
     } catch (e) {
       setMessage(`Seed failed: ${(e as Error).message}`);
@@ -539,57 +495,7 @@ export default function App() {
     }
   }
 
-  // SME Step 4: Owner revokes payroll salary register; quarantine propagates to Q3 report.
-  async function revokePayroll() {
-    setLoading(true);
-    try {
-      const result = await postJson<{
-        revoked: boolean;
-        quarantined: string[];
-        access: AccessResult;
-      }>(
-        "/artifacts/payroll_salary_register/revoke",
-        { purpose: "data_integrity_review" },
-        tokenFor("u_owner"),
-      );
-      await refresh();
-      await loadLineage("q3_growth_margin_report");
-      setSelectedArtifactId("q3_growth_margin_report");
-      if (result.revoked) {
-        const q = result.quarantined;
-        setMessage(
-          `payroll_salary_register revoked. Quarantined: ${q.join(", ")} (${q.length} artifact${q.length !== 1 ? "s" : ""}).`,
-        );
-      } else {
-        setMessage(`Revocation denied: ${result.access?.reason}`);
-      }
-    } catch (e) {
-      setMessage(`Step failed: ${(e as Error).message}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // SME Step 5: Refresh and show quarantine state of Q3 report.
-  async function showSMEQuarantineState() {
-    setLoading(true);
-    try {
-      await refresh();
-      await loadLineage("q3_growth_margin_report");
-      setSelectedArtifactId("q3_growth_margin_report");
-      setMessage(
-        "Q3 Growth Margin Report: quarantined (amber badge). " +
-          "Derived artifact automatically closed because payroll lineage source was revoked.",
-      );
-    } catch (e) {
-      setMessage(`Step failed: ${(e as Error).message}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Biotech Step 3: silently derive an "Exec Brief" grandchild from phase2 first so
-  // step 4 can show two-level quarantine, then revoke adverse_event_memo.
+  // Step 4: derive exec brief grandchild, then revoke adverse_event_memo.
   async function revokeWithCascade() {
     setLoading(true);
     try {
@@ -631,8 +537,26 @@ export default function App() {
     }
   }
 
-  // Biotech Step 4: open the quarantined phase2 as CEO to produce a DENY.
-  async function showBiotechQuarantineState() {
+  // Step 5: refresh artifact list to show quarantined badges.
+  async function showQuarantineState() {
+    setLoading(true);
+    try {
+      await refresh();
+      await loadLineage("phase2_readiness_memo");
+      setSelectedArtifactId("phase2_readiness_memo");
+      setMessage(
+        "Phase II readiness memo and descendants quarantined (amber badges). " +
+          "Revoked adverse_event_memo sealed the derived lineage chain.",
+      );
+    } catch (e) {
+      setMessage(`Step failed: ${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Step 6: open quarantined phase2 as CEO to produce a DENY with no plaintext.
+  async function showBiotechQuarantineDeny() {
     setLoading(true);
     try {
       await openArtifact("phase2_readiness_memo", "u_ceo");
@@ -650,12 +574,16 @@ export default function App() {
   async function showAuditEvidence() {
     setLoading(true);
     try {
-      await refresh();
+      const ev = await getJson<AuditEvent[]>("/audit");
+      setAudit(ev);
+      if (ev.length > 0) {
+        setExpandedAuditId(ev[0].id);
+      }
+      const m = await getJson<LatencyMetrics>("/metrics/permission-latency");
+      setMetrics(m);
       setMessage(
-        `Audit log: ${audit.length + 1}+ events recorded. ` +
-          (metrics && metrics.count > 0
-            ? `P99 latency: ${metrics.p99_ms} ms — well under 200 ms budget.`
-            : "Metrics updating…"),
+        `Audit log: ${ev.length} events — expand rows for request_id, purpose, and structured provenance. ` +
+          (m.count > 0 ? `P99 latency: ${m.p99_ms} ms — under 200 ms budget.` : ""),
       );
     } catch (e) {
       setMessage(`Refresh failed: ${(e as Error).message}`);
@@ -664,75 +592,55 @@ export default function App() {
     }
   }
 
+  async function showPermissionPathEvidence() {
+    setLoading(true);
+    try {
+      const m = await getJson<LatencyMetrics>("/metrics/permission-latency");
+      setMetrics(m);
+      setMessage(
+        "Permission path: bearer token → resolve_principal() → evaluate_access() (pure SQL) → log_audit() → decrypt on allow only. " +
+          "0 model tokens · no LLM permission decision · open-weight generation only after authorization.",
+      );
+    } catch (e) {
+      setMessage(`Metrics failed: ${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function runStep(i: number) {
     setActiveStep(i);
     try {
-      if (scenario === "sme") {
-        if (i === 0) {
-          await openArtifact("campaign_cost_summary", "u_marketing");
-        } else if (i === 1) {
-          await openArtifact("q3_growth_margin_report", "u_marketing");
-        } else if (i === 2) {
-          await openArtifact("q3_growth_margin_report", "u_finance");
-        } else if (i === 3) {
-          // Show lineage of the Q3 report without opening it as a specific user.
-          setLoading(true);
-          try {
-            await loadLineage("q3_growth_margin_report");
-            setSelectedArtifactId("q3_growth_margin_report");
-            await refresh();
-            setMessage(
-              "Lineage: campaign_cost_summary + vendor_contracts + payroll_salary_register → q3_growth_margin_report. " +
-                "Marketing can read campaign costs and vendor contracts, but payroll remains restricted; the derived report is governed separately and is denied.",
-            );
-          } finally {
-            setLoading(false);
-          }
-        } else if (i === 4) {
-          await revokePayroll();
-        } else if (i === 5) {
-          await showSMEQuarantineState();
-        } else if (i === 6) {
-          await openArtifact("q3_growth_margin_report", "u_finance");
-        } else if (i === 7) {
-          await showAuditEvidence();
+      if (i === 0) {
+        await openArtifact("phase2_readiness_memo", "u_regulatory");
+      } else if (i === 1) {
+        await openArtifact("phase2_readiness_memo", "u_cro");
+      } else if (i === 2) {
+        setLoading(true);
+        try {
+          await loadLineage("phase2_readiness_memo");
+          setSelectedArtifactId("phase2_readiness_memo");
+          await refresh();
+          setMessage(
+            "Lineage: public_target_paper + internal_sar_table + toxicity_report + adverse_event_memo → phase2_readiness_memo.",
+          );
+        } finally {
+          setLoading(false);
         }
-      } else {
-        // Biotech steps
-        if (i === 0) {
-          await openArtifact("phase2_readiness_memo", "u_ceo");
-        } else if (i === 1) {
-          await openArtifact("phase2_readiness_memo", "u_cro");
-        } else if (i === 2) {
-          await openArtifact("phase2_readiness_memo", "u_regulatory");
-        } else if (i === 3) {
-          await revokeWithCascade();
-        } else if (i === 4) {
-          await showBiotechQuarantineState();
-        } else if (i === 5) {
-          await showAuditEvidence();
-        }
+      } else if (i === 3) {
+        await revokeWithCascade();
+      } else if (i === 4) {
+        await showQuarantineState();
+      } else if (i === 5) {
+        await showBiotechQuarantineDeny();
+      } else if (i === 6) {
+        await showAuditEvidence();
+      } else if (i === 7) {
+        await showPermissionPathEvidence();
       }
       setCompletedSteps((prev) => new Set([...prev, i]));
     } finally {
       setActiveStep(null);
-    }
-  }
-
-  async function proofContractorSelfGrant() {
-    setProofLoading(true);
-    try {
-      const r = await postJson<Record<string, unknown>>(
-        "/artifacts/payroll_salary_register/grant",
-        { subject_user_id: "u_contractor", operation: "read", purpose: "self-escalation-attempt" },
-        tokenFor("u_contractor"),
-      );
-      setProofResult({ proof: "contractor_self_grant_sme", ...r });
-      await refresh();
-    } catch (e) {
-      setProofResult({ error: (e as Error).message });
-    } finally {
-      setProofLoading(false);
     }
   }
 
@@ -756,20 +664,16 @@ export default function App() {
   async function proofOwnerRedaction() {
     setProofLoading(true);
     try {
-      const parentIds =
-        scenario === "sme"
-          ? ["campaign_cost_summary", "company_handbook"]
-          : ["public_target_paper", "internal_sar_table"];
       const r = await postJson<Record<string, unknown>>(
         "/derive",
         {
           title: "Security Proof: Governed Redaction",
-          parent_artifact_ids: parentIds,
+          parent_artifact_ids: ["public_target_paper", "internal_sar_table"],
           redacted: true,
           redact_parent_ids: [],
           reason: "security_proof_governed_redaction",
         },
-        scenario === "sme" ? tokenFor("u_owner") : tokenFor("u_ceo"),
+        tokenFor("u_ceo"),
       );
       setProofResult({ proof: "governed_redaction", ...r });
       await refresh();
@@ -781,7 +685,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    seedDemo("sme");
+    seedDemo();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -800,50 +704,14 @@ export default function App() {
       <header className="hero">
         <div className="hero-text">
           <p className="eyebrow">BioVault · BasedAI Enterprise Memory Governance at Scale</p>
-          {scenario === "sme" ? (
-            <>
-              <h1>Prevent AI agents from leaking company memory — like payroll — into marketing answers.</h1>
-              <p>
-                One global artifact store. Deterministic capability check at every read.
-                Payroll revocation propagates through lineage to derived reports — no copies, no drift, no LLM in the permission path.
-                Every decision is audited.
-              </p>
-            </>
-          ) : (
-            <>
-              <h1>Capability-secured artifact memory for AI science agents</h1>
-              <p>
-                A deterministic, lineage-aware permission layer that prevents AI agents from leaking
-                sensitive biotech data. Identity proven by unforgeable capability tokens — no LLM in the
-                permission path, every decision audited.
-              </p>
-            </>
-          )}
+          <h1>Lineage-secured memory for AI science agents</h1>
+          <p>
+            BioVault secures AI-generated scientific artifacts by carrying source permissions through
+            lineage. When an adverse-event source is revoked, every derived Phase II memo quarantines —
+            external CROs denied, every decision audited, 0 model tokens in the permission path.
+          </p>
         </div>
         <div className="actions">
-          <div className="scenario-switcher">
-            <span className="scenario-label">Demo scenario:</span>
-            <button
-              className={`scenario-btn${scenario === "sme" ? " scenario-active" : ""}`}
-              disabled={loading}
-              onClick={() => {
-                setScenario("sme");
-                seedDemo("sme");
-              }}
-            >
-              SME / Company Memory
-            </button>
-            <button
-              className={`scenario-btn${scenario === "biotech" ? " scenario-active" : ""}`}
-              disabled={loading}
-              onClick={() => {
-                setScenario("biotech");
-                seedDemo("biotech");
-              }}
-            >
-              AI Science / Biotech
-            </button>
-          </div>
           <div className="action-row">
             <button disabled={loading} onClick={() => seedDemo()} className="btn-primary">
               ↺ Seed / Reset Demo
@@ -876,12 +744,10 @@ export default function App() {
       <section className="card demo-steps">
         <h2>
           Demo Flow{" "}
-          <span className="demo-sub">
-            {scenario === "sme" ? "SME · payroll leakage story" : "AI Science · pharma R&D story"} · Click steps in order
-          </span>
+          <span className="demo-sub">BVK-14 kinase programme · Click steps in order</span>
         </h2>
         <ol className="step-list">
-          {activeSteps.map((step, i) => (
+          {DEMO_STEPS.map((step, i) => (
             <li
               key={i}
               className={[
@@ -942,7 +808,7 @@ export default function App() {
       <section className="dashboard">
         {/* Artifact list */}
         <div className="card artifact-list">
-          <h2>{scenario === "sme" ? "Global Shared Memory" : "Artifacts"}</h2>
+          <h2>Shared Scientific Memory</h2>
           {artifacts.map((a) => (
             <button
               className={`artifact-row${a.id === selectedArtifactId ? " selected" : ""} status-${a.status}`}
@@ -1080,45 +946,22 @@ export default function App() {
           properties live. Every action is audited.
         </p>
         <div className="proof-buttons">
-          {scenario === "sme" ? (
-            <>
-              <button
-                className="btn-secondary"
-                disabled={proofLoading || !tokens["u_contractor"]}
-                onClick={proofContractorSelfGrant}
-                title="Contractor attempts to grant themselves read on the payroll register — must be denied"
-              >
-                Proof 1 — Contractor self-grant on payroll (expect DENY)
-              </button>
-              <button
-                className="btn-primary"
-                disabled={proofLoading || !tokens["u_owner"]}
-                onClick={proofOwnerRedaction}
-                title="Owner creates a governed redacted derivation — must produce redaction attestation"
-              >
-                Proof 2 — Owner governed redaction (expect attestation_id)
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className="btn-secondary"
-                disabled={proofLoading || !tokens["u_intern"]}
-                onClick={proofInternSelfGrant}
-                title="Intern attempts to grant themselves read on the SAR table — must be denied"
-              >
-                Proof 1 — Intern self-grant attempt (expect DENY)
-              </button>
-              <button
-                className="btn-primary"
-                disabled={proofLoading || !tokens["u_ceo"]}
-                onClick={proofOwnerRedaction}
-                title="CEO creates a governed redacted derivation — must produce redaction attestation"
-              >
-                Proof 2 — CEO governed redaction (expect attestation_id)
-              </button>
-            </>
-          )}
+          <button
+            className="btn-secondary"
+            disabled={proofLoading || !tokens["u_intern"]}
+            onClick={proofInternSelfGrant}
+            title="Intern attempts to grant themselves read on the SAR table — must be denied"
+          >
+            Proof 1 — Intern self-grant attempt (expect DENY)
+          </button>
+          <button
+            className="btn-primary"
+            disabled={proofLoading || !tokens["u_ceo"]}
+            onClick={proofOwnerRedaction}
+            title="CEO creates a governed redacted derivation — must produce redaction attestation"
+          >
+            Proof 2 — CEO governed redaction (expect attestation_id)
+          </button>
         </div>
         {proofResult && (
           <pre className="proof-result">{JSON.stringify(proofResult, null, 2)}</pre>

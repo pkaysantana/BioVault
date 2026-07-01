@@ -624,7 +624,12 @@ def health() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def _seed_biotech(conn: sqlite3.Connection) -> tuple[int, int, dict[str, str]]:
-    """Seed the biotech / pharma R&D scenario (AI-science secondary demo)."""
+    """Seed the biotech / pharma R&D scenario (default demo).
+
+    BVK-14 kinase program: AI science agents derive a Phase II readiness memo from
+    source documents including an adverse-event memo. External CRO is denied the
+    derived memo; revoking the adverse-event source quarantines downstream artifacts.
+    """
     users = [
         ("u_ceo", "Avery Chen", "CEO", "Leadership"),
         ("u_research", "Maya Patel", "Research Scientist", "R&D"),
@@ -695,101 +700,9 @@ def _seed_biotech(conn: sqlite3.Connection) -> tuple[int, int, dict[str, str]]:
     return len(users), len(artifacts), tokens
 
 
-def _seed_sme(conn: sqlite3.Connection) -> tuple[int, int, dict[str, str]]:
-    """Seed the SME company-memory payroll-leakage scenario (default demo).
-
-    The leakage case: Marketing has read access to campaign costs and vendor
-    contracts, but must NOT receive the Q3 Growth Margin Report because it is a
-    governed derived artifact whose lineage includes the payroll salary register.
-    Marketing lacks a capability grant on that derived artifact, and payroll
-    revocation propagates to it through lineage.
-    """
-    users = [
-        ("u_owner", "Alex Kim", "Owner", "Leadership"),
-        ("u_finance", "Jordan Lee", "Finance Lead", "Finance"),
-        ("u_marketing", "Morgan Chen", "Marketing Manager", "Marketing"),
-        ("u_hr", "Riley Park", "HR Lead", "HR"),
-        ("u_ops", "Sam Rivera", "Operations Manager", "Operations"),
-        ("u_contractor", "Casey Jones", "External Contractor", "External"),
-    ]
-    artifacts = [
-        ("campaign_cost_summary", "Campaign Cost Summary", "source",
-         "Q3 marketing spend breakdown: digital campaigns $48K, content $22K, events $31K. "
-         "Total campaign budget utilization 87%. Performance metrics and channel ROI attached.", "internal"),
-        ("vendor_contracts", "Vendor Contracts", "source",
-         "Active vendor agreements: SaaS tools $8.2K/mo, agency retainer $15K/mo, "
-         "freelance pool $6K/mo. Renewal dates, SLA terms, and penalty clauses. Internal use.", "internal"),
-        ("payroll_salary_register", "Payroll Salary Register", "source",
-         "CONFIDENTIAL — Full payroll register Q3: base salaries, bonuses, equity grants "
-         "by employee ID. HR and Finance access only. Do not distribute or share.", "confidential"),
-        ("shared_customer_feedback", "Customer Feedback Digest", "source",
-         "Aggregated customer feedback Q3: NPS 42, top themes — onboarding friction, "
-         "pricing clarity, support response times. PII removed. Broadly shareable.", "internal"),
-        ("company_handbook", "Company Handbook", "source",
-         "Employee policies, benefits overview, code of conduct, remote-work guidelines, "
-         "and onboarding checklist. Available to all staff and approved contractors.", "public"),
-        ("q3_growth_margin_report", "Q3 Growth Margin Report", "derived",
-         "DERIVED — Synthesises campaign costs, vendor spend, and payroll data to compute "
-         "Q3 gross margin and net margin by department. Contains payroll-sensitive inputs. "
-         "Restricted to Finance and Leadership.", "confidential"),
-    ]
-
-    tokens: dict[str, str] = {}
-    for user_id, name, role, team in users:
-        tokens[user_id] = add_user(conn, user_id, name, role, team)
-    for a in artifacts:
-        add_artifact(conn, a[0], a[1], a[2], a[3], a[4], "u_owner")
-
-    # The Q3 report is derived from campaign costs, vendor spend, and payroll.
-    # Marketing's access to individual campaign/vendor sources is irrelevant —
-    # they lack a capability on the payroll-mixed derived artifact, and payroll
-    # revocation propagates to it through lineage.
-    for parent_id in ["campaign_cost_summary", "vendor_contracts", "payroll_salary_register"]:
-        parent = get_artifact(conn, parent_id)
-        conn.execute(
-            """
-            INSERT INTO lineage_edges
-                (parent_artifact_id, child_artifact_id, dependency_type, inclusion,
-                 source_hash, created_by, reason)
-            VALUES (?, ?, 'source', 'included', ?, 'u_owner', 'seed_lineage')
-            """,
-            (parent_id, "q3_growth_margin_report", content_hash(decrypt(parent["encrypted_content"]))),
-        )
-
-    all_ids = [a[0] for a in artifacts]
-
-    # Owner: full authority on all artifacts.
-    grant_many(conn, "u_owner", all_ids, ["read", "derive", "revoke", "grant", "redact"])
-
-    # Finance: read payroll register, the Q3 report, and handbook.
-    grant_many(conn, "u_finance",
-               ["payroll_salary_register", "q3_growth_margin_report", "company_handbook"], ["read"])
-
-    # Marketing: read campaign costs, vendor contracts, customer feedback, handbook.
-    # Deliberately excluded: payroll_salary_register and q3_growth_margin_report.
-    grant_many(conn, "u_marketing",
-               ["campaign_cost_summary", "vendor_contracts", "shared_customer_feedback", "company_handbook"],
-               ["read"])
-
-    # HR: read payroll register and handbook.
-    grant_many(conn, "u_hr", ["payroll_salary_register", "company_handbook"], ["read"])
-
-    # Ops: read vendor contracts and handbook.
-    grant_many(conn, "u_ops", ["vendor_contracts", "company_handbook"], ["read"])
-
-    # Contractor: read handbook only.
-    grant_many(conn, "u_contractor", ["company_handbook"], ["read"])
-
-    return len(users), len(artifacts), tokens
-
-
 @app.post("/seed")
-def seed(scenario: str = Query(default="sme")) -> dict[str, Any]:
-    """Reset all tables and load a demo dataset.
-
-    Supported scenarios:
-    - ``sme``     (default): Company-memory payroll-leakage demo for BasedAI workshop.
-    - ``biotech``: AI-science pharma R&D kinase-drug-program demo.
+def seed() -> dict[str, Any]:
+    """Reset all tables and load the BVK-14 biotech demo dataset.
 
     Returns plaintext principal tokens ONCE (demo only). Only hashes are stored.
     """
@@ -805,14 +718,11 @@ def seed(scenario: str = Query(default="sme")) -> dict[str, Any]:
             DELETE FROM users;
             """
         )
-        if scenario == "biotech":
-            user_count, artifact_count, tokens = _seed_biotech(conn)
-        else:
-            user_count, artifact_count, tokens = _seed_sme(conn)
+        user_count, artifact_count, tokens = _seed_biotech(conn)
 
     return {
         "status": "seeded",
-        "scenario": "biotech" if scenario == "biotech" else "sme",
+        "scenario": "biotech",
         "users": user_count,
         "artifacts": artifact_count,
         "tokens": tokens,
