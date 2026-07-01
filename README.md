@@ -92,6 +92,35 @@ Nothing in this repo calls a model yet; the hook is the integration point.
 
 ---
 
+## Optional Kaspa SikaGuard module
+
+BioVault’s Coral MVP coordinates agents through **CoralOS** while **Solana devnet** handles the current escrow demo. A future **Kaspa SikaGuard** module can enforce autonomous-agent spending limits through covenant-style controls — without replacing Solana escrow in this phase and without adding Kaspa dependencies yet.
+
+| Layer | Role |
+|---|---|
+| **CoralOS** | Coordinates buyer, seller, and risk agents for each SikaRoute market round |
+| **Solana devnet** | Current escrow demo (unchanged) |
+| **Kaspa (future)** | Covenant-style spend caps — small auto path, larger/risky spends require human approval |
+
+**SikaRoute Market** produces an `agent_spending_policy` object for every market round:
+
+- Low-risk, low-value reports may use an **auto** approval path.
+- High-value reports require **human approval**.
+- Reports flagged by the risk-agent require **human approval**.
+- Unsupported corridors and missing disclaimers are **blocked**.
+
+The policy is deterministic JSON. Its hash is computed as:
+
+`policy_hash = sha256(canonical_json(agent_spending_policy))`
+
+The UI and API surface this as **Kaspa-ready covenant policy hash** — a hook for future on-chain enforcement, not live settlement.
+
+**Principles:** keep AI in the loop, not in control of settlement. **Scope:** testnet only · no real user funds · no personal data on-chain · no live Kaspa integration in the Coral MVP phase · no covenant implementation yet.
+
+Try it: `GET /sika-route/market/scenarios` · `POST /sika-route/market/scenarios/{id}/run` · `POST /sika-route/market/round`
+
+---
+
 ## How to run
 
 ```powershell
@@ -120,6 +149,9 @@ Open `http://localhost:5173` — BVK-14 demo loads automatically.
 | POST | `/query` | Bearer | Agent gate — content only if allowed |
 | POST | `/artifacts/{id}/revoke` | Bearer | Revoke source + quarantine descendants |
 | GET | `/lineage/{id}`, `/audit`, `/metrics/permission-latency` | — | Lineage, audit, latency |
+| GET | `/sika-route/market/scenarios` | — | SikaRoute demo scenarios |
+| POST | `/sika-route/market/scenarios/{id}/run` | — | Run demo round → `agent_spending_policy` |
+| POST | `/sika-route/market/round` | — | Custom market round → spending policy + hash |
 
 ### Tests
 

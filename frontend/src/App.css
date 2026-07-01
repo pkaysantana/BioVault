@@ -531,6 +531,49 @@ pre {
   white-space: pre-wrap;
 }
 
+/* ---- SikaRoute policy hook ---- */
+.sika-card { margin-bottom: 18px; }
+.sika-card .sika-scenario-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.sika-scenario-btn {
+  font-size: 0.78rem;
+  text-transform: capitalize;
+}
+.sika-scenario-active {
+  outline: 2px solid #6df5d1;
+  outline-offset: 2px;
+}
+.sika-result { margin-top: 16px; }
+.sika-hash-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.sika-hash {
+  background: #eef6f4;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  word-break: break-all;
+}
+.sika-meta {
+  color: #4a5568;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.sika-approval-auto { color: #1b9a7f; }
+.sika-approval-human_required { color: #b7791f; }
+.sika-approval-blocked { color: #bf3227; }
+
 .hash {
   background: #eef2f7;
   border-radius: 6px;

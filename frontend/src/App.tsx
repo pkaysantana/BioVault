@@ -95,6 +95,45 @@ type SeedResponse = {
   tokens: Record<string, string>;
 };
 
+type AgentSpendingPolicy = {
+  market_id: string;
+  service: string;
+  buyer_agent: string;
+  selected_seller_agent: string;
+  max_auto_spend: number;
+  spend_currency: string;
+  risk_level: string;
+  requires_human_approval: boolean;
+  reason: string;
+  approval_policy: "auto" | "human_required" | "blocked";
+  request_hash: string;
+  bid_hash: string;
+  delivery_hash?: string;
+  disclaimer: string;
+};
+
+type SikaRouteScenario = {
+  scenario_id: string;
+  market_id: string;
+  corridor: string;
+  report_value: number;
+  risk_level: string;
+  risk_agent_flagged: boolean;
+  description: string;
+};
+
+type SikaRouteRoundResult = {
+  market_id: string;
+  corridor: string;
+  report_value: number;
+  buyer_agent: string;
+  selected_seller_agent: string;
+  agent_spending_policy: AgentSpendingPolicy;
+  policy_hash: string;
+  kaspa_ready_covenant_policy_hash: string;
+  kaspa_ready_covenant_policy_hash_label: string;
+};
+
 // ---------------------------------------------------------------------------
 // API — identity carried only by bearer capability token
 // ---------------------------------------------------------------------------
@@ -423,6 +462,10 @@ export default function App() {
   const [expandedAuditId, setExpandedAuditId] = useState<string | null>(null);
   const [proofResult, setProofResult] = useState<Record<string, unknown> | null>(null);
   const [proofLoading, setProofLoading] = useState(false);
+  const [sikaScenarios, setSikaScenarios] = useState<SikaRouteScenario[]>([]);
+  const [sikaRound, setSikaRound] = useState<SikaRouteRoundResult | null>(null);
+  const [sikaLoading, setSikaLoading] = useState(false);
+  const [activeSikaScenario, setActiveSikaScenario] = useState<string | null>(null);
 
   const selectedUser = useMemo(
     () => users.find((u) => u.id === selectedUserId),
@@ -684,8 +727,35 @@ export default function App() {
     }
   }
 
+  async function loadSikaScenarios() {
+    try {
+      const res = await getJson<{ scenarios: SikaRouteScenario[] }>("/sika-route/market/scenarios");
+      setSikaScenarios(res.scenarios);
+    } catch {
+      setSikaScenarios([]);
+    }
+  }
+
+  async function runSikaScenario(scenarioId: string) {
+    setSikaLoading(true);
+    setActiveSikaScenario(scenarioId);
+    try {
+      const result = await postJson<SikaRouteRoundResult>(
+        `/sika-route/market/scenarios/${scenarioId}/run`,
+        {},
+      );
+      setSikaRound(result);
+    } catch (e) {
+      setSikaRound(null);
+      setMessage(`SikaRoute round failed: ${(e as Error).message}`);
+    } finally {
+      setSikaLoading(false);
+    }
+  }
+
   useEffect(() => {
     seedDemo();
+    loadSikaScenarios();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -937,6 +1007,51 @@ export default function App() {
           </div>
         </section>
       )}
+
+      {/* SikaRoute Market — Kaspa-ready spending policy hook */}
+      <section className="card sika-card">
+        <h2>SikaRoute Market — Kaspa-ready policy hook</h2>
+        <p className="compliance-sub">
+          Every market round emits a deterministic <code>agent_spending_policy</code> JSON object.
+          Solana devnet still handles the escrow demo; this hook prepares covenant-style spend
+          limits for a future Kaspa SikaGuard module — no live Kaspa in the Coral MVP phase.
+        </p>
+        <div className="sika-scenario-grid">
+          {sikaScenarios.map((scenario) => (
+            <button
+              key={scenario.scenario_id}
+              className={`btn-secondary sika-scenario-btn${
+                activeSikaScenario === scenario.scenario_id ? " sika-scenario-active" : ""
+              }`}
+              disabled={sikaLoading}
+              onClick={() => runSikaScenario(scenario.scenario_id)}
+              title={scenario.description}
+            >
+              {scenario.scenario_id.replace(/_/g, " ")}
+            </button>
+          ))}
+        </div>
+        {sikaRound && (
+          <div className="sika-result">
+            <div className="sika-hash-row">
+              <strong>{sikaRound.kaspa_ready_covenant_policy_hash_label}</strong>
+              <code className="sika-hash">{sikaRound.policy_hash}</code>
+            </div>
+            <div className="sika-meta">
+              <span>
+                approval:{" "}
+                <strong className={`sika-approval sika-approval-${sikaRound.agent_spending_policy.approval_policy}`}>
+                  {sikaRound.agent_spending_policy.approval_policy}
+                </strong>
+              </span>
+              <span>reason: {sikaRound.agent_spending_policy.reason}</span>
+              <span>corridor: {sikaRound.corridor}</span>
+              <span>value: {sikaRound.report_value} {sikaRound.agent_spending_policy.spend_currency}</span>
+            </div>
+            <pre className="proof-result">{JSON.stringify(sikaRound.agent_spending_policy, null, 2)}</pre>
+          </div>
+        )}
+      </section>
 
       {/* Security Proofs — optional bonus demo */}
       <section className="card proof-card">
