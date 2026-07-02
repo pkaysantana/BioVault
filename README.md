@@ -23,6 +23,9 @@ When a source is revoked for data integrity, every **derived artifact** that inc
 
 BioVault is a **permission gate + demo dashboard** for shared scientific artifact memory. It is **not** an AI agent and **does not call any LLM**.
 
+It avoids token-heavy permission prompts by enforcing deterministic governance before generation:
+models only receive authorized context after capability, lineage, revocation, and audit checks pass.
+
 | Mechanism | What it does |
 |---|---|
 | **Capability tokens** | Bearer token → `(principal, artifact, operation)` grant before any read |
@@ -35,7 +38,7 @@ BioVault is a **permission gate + demo dashboard** for shared scientific artifac
 
 ## Demo: BVK-14 kinase programme
 
-Seed with **Seed / Reset Demo** or `POST /seed`.
+Seed with **Start / Reset Demo** or `POST /seed`.
 
 **Story:** An AI science program (kinase BVK-14) derives a **Phase II Readiness Memo** from source documents including an **Adverse Event Memo**. External CRO must not access the derived memo. When the adverse-event source is revoked, the Phase II memo quarantines automatically.
 
@@ -63,15 +66,18 @@ Full walkthrough: [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)
 
 ## BasedAI requirement mapping
 
-| BasedAI requirement | BioVault evidence |
-|---|---|
-| Deterministic retrieval-layer enforcement | `evaluate_access()` — indexed SQL, no model |
-| No LLM in permission path | 0 model tokens; permission path is token-free |
-| Audit logs | Every allow/deny with `request_id` and structured detail |
-| Sub-200 ms evidence | `GET /metrics/permission-latency` — P99 under 200 ms in tests |
-| Derived memory lineage | `lineage_edges` with source hashes; checked on every read |
-| Revocation propagation | BFS quarantine on revoke; `derived_from_revoked_source` deny |
-| Open-weight compatibility | `POST /query` gate — any model calls after authorization only |
+| Requirement | BioVault implementation | Evidence | Honest scope |
+|---|---|---|---|
+| Source ACL sync under concurrent updates | Simulated source ACL/revocation event revokes source and quarantines descendants | `test_stale_capability_denied_after_source_revoke` | Not real external IAM sync yet |
+| Deterministic retrieval-layer enforcement | `evaluate_access()` / `can_access()` before artifact read or `POST /query` | `test_allow_deny_matrix`, `backend/app/main.py` | Deterministic SQL/Python path |
+| No LLM in permission path | No model imports or calls in backend permission path | Code scan; UI compliance matrix | Optional generation only after authorization |
+| Audit logs | `request_id`, principal, artifact, operation, decision, reason, latency_ms, structured detail | `test_artifact_read_audit_contains_structured_detail`, `test_audit_records_all_operation_types` | Regulatory-style traceability — not tamper-evident compliance-grade audit |
+| P99 under 200 ms | Permission latency benchmark + live metrics | `test_permission_latency_p99_under_200ms`, `GET /metrics/permission-latency` | Local hackathon benchmark — not production load test |
+| Derived memory lineage | `lineage_edges` + source hash / inclusion metadata | `test_governed_redaction_succeeds_on_healthy_sources`, lineage API | Prototype lineage graph |
+| Source revocation propagation | BFS quarantine of descendants on revoke | `test_multi_level_revocation_propagation`, `test_adverse_event_revocation_quarantines_phase2_memo` | Simulated source revocation |
+| Open-weight compliance | Permission layer is model-free; optional model after authorization can be open-weight | No closed-model runtime dependency; `POST /query` gate | Open-weight compatible — not deeply integrated |
+| Bonus: temporal access | `expires_at` grant check in `has_grant()` | `test_expired_grant_denies_artifact_read` | Grant expiry demo — not full policy calendar engine |
+| Bonus: query-time inference prevention | `POST /query` denies before context/model; no plaintext on deny | `test_cro_query_denied_returns_no_plaintext` | Deterministic gate — not full semantic inference prevention |
 
 ---
 
@@ -89,35 +95,6 @@ if result["decision"] != "allow":
 ```
 
 Nothing in this repo calls a model yet; the hook is the integration point.
-
----
-
-## Optional Kaspa SikaGuard module
-
-BioVault’s Coral MVP coordinates agents through **CoralOS** while **Solana devnet** handles the current escrow demo. A future **Kaspa SikaGuard** module can enforce autonomous-agent spending limits through covenant-style controls — without replacing Solana escrow in this phase and without adding Kaspa dependencies yet.
-
-| Layer | Role |
-|---|---|
-| **CoralOS** | Coordinates buyer, seller, and risk agents for each SikaRoute market round |
-| **Solana devnet** | Current escrow demo (unchanged) |
-| **Kaspa (future)** | Covenant-style spend caps — small auto path, larger/risky spends require human approval |
-
-**SikaRoute Market** produces an `agent_spending_policy` object for every market round:
-
-- Low-risk, low-value reports may use an **auto** approval path.
-- High-value reports require **human approval**.
-- Reports flagged by the risk-agent require **human approval**.
-- Unsupported corridors and missing disclaimers are **blocked**.
-
-The policy is deterministic JSON. Its hash is computed as:
-
-`policy_hash = sha256(canonical_json(agent_spending_policy))`
-
-The UI and API surface this as **Kaspa-ready covenant policy hash** — a hook for future on-chain enforcement, not live settlement.
-
-**Principles:** keep AI in the loop, not in control of settlement. **Scope:** testnet only · no real user funds · no personal data on-chain · no live Kaspa integration in the Coral MVP phase · no covenant implementation yet.
-
-Try it: `GET /sika-route/market/scenarios` · `POST /sika-route/market/scenarios/{id}/run` · `POST /sika-route/market/round`
 
 ---
 
@@ -149,9 +126,6 @@ Open `http://localhost:5173` — BVK-14 demo loads automatically.
 | POST | `/query` | Bearer | Agent gate — content only if allowed |
 | POST | `/artifacts/{id}/revoke` | Bearer | Revoke source + quarantine descendants |
 | GET | `/lineage/{id}`, `/audit`, `/metrics/permission-latency` | — | Lineage, audit, latency |
-| GET | `/sika-route/market/scenarios` | — | SikaRoute demo scenarios |
-| POST | `/sika-route/market/scenarios/{id}/run` | — | Run demo round → `agent_spending_policy` |
-| POST | `/sika-route/market/round` | — | Custom market round → spending policy + hash |
 
 ### Tests
 
@@ -161,6 +135,14 @@ python -m pytest -q
 ```
 
 Planning: [docs/TODO.md](docs/TODO.md) · [docs/BEST_CASE.md](docs/BEST_CASE.md) · Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+### Optional CRO agent script
+
+```powershell
+python scripts/demo_agent_cro.py
+```
+
+External CRO science agent calls `POST /query` for `phase2_readiness_memo` → **DENY** — no synthesis from protected clinical data. Set `BIOVAULT_BASE_URL` for a deployed backend.
 
 ---
 

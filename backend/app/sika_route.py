@@ -150,7 +150,7 @@ DEMO_SCENARIOS: dict[str, MarketRoundInput] = {
         request_payload={
             "route": "US-KE",
             "amount": 75.0,
-            "purpose": "sme_payroll_batch",
+            "purpose": "clinical_handoff_batch",
         },
         bid_payload={
             "seller": "sika-seller-nairobi",
@@ -170,7 +170,7 @@ DEMO_SCENARIOS: dict[str, MarketRoundInput] = {
         request_payload={
             "route": "US-NG",
             "amount": 750.0,
-            "purpose": "vendor_settlement",
+            "purpose": "partner_lab_handoff",
         },
         bid_payload={
             "seller": "sika-seller-lagos",
