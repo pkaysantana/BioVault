@@ -5,7 +5,8 @@
 Hackathon MVP · **BasedAI Enterprise Memory Governance at Scale**
 
 **Team:** BioVault · [@pkaysantana](https://github.com/pkaysantana) (Don Aborah)  
-**Submission:** [BasedAICo/hackathons#3](https://github.com/BasedAICo/hackathons/pull/3) · [pkaysantana/hackathons](https://github.com/pkaysantana/hackathons)
+**Submission:** [BasedAICo/hackathons#3](https://github.com/BasedAICo/hackathons/pull/3) · [pkaysantana/hackathons](https://github.com/pkaysantana/hackathons)  
+**Live demo:** https://biovault-mauve.vercel.app
 
 > Educational prototype only — not production security or clinical decision support.
 
