@@ -17,6 +17,17 @@ This submission is a hackathon prototype for the BasedAI Enterprise Memory Gover
 - Denied reads and `/query` calls return no plaintext/context.
 - Every access decision is audited with `request_id`, provenance, and latency.
 
+## Agent Tool Contract Invariant
+
+`POST /query` is BioVault's typed memory-tool boundary for AI science agents:
+
+- `/query` uses the same deterministic source-lineage permission path as artifact reads.
+- `/query` deny returns `authorized_context: null`.
+- `/query` allow returns authorized scientific context only under `authorized_context`.
+- `audit_ref` links the agent request to the audit trail through the same `request_id`.
+- No model call is in the permission path.
+- Source-lineage semantics apply to `/query`: derived artifacts require the target grant plus included source grants.
+
 ## A/B/C Policy Semantics
 
 - A = default semantic rule: source-lineage access is required.
@@ -56,3 +67,10 @@ This submission is a hackathon prototype for the BasedAI Enterprise Memory Gover
 - Not full Hirebase integration.
 - No production KMS/HSM.
 - No tamper-evident audit ledger yet.
+
+## Related Design Notes
+
+- [AGENT_TOOL_CONTRACT.md](AGENT_TOOL_CONTRACT.md)
+- [PERSISTENCE_ARCHITECTURE.md](PERSISTENCE_ARCHITECTURE.md)
+- [ADR-001-postgres-first-persistence.md](ADR-001-postgres-first-persistence.md)
+- [ADR-002-oidc-scim-entra-first.md](ADR-002-oidc-scim-entra-first.md)

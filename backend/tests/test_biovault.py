@@ -21,10 +21,36 @@ from tests.conftest import auth
 
 PHASE2 = "phase2_readiness_memo"
 ADVERSE = "adverse_event_memo"
+FORBIDDEN_QUERY_TEXT_FIELDS = {"plaintext_content", "content", "context", "synthesis"}
 
 
 def read(client, token, artifact_id):
     return client.get(f"/artifacts/{artifact_id}", headers=auth(token))
+
+
+def query(client, token, artifact_id, purpose="agent_retrieval"):
+    return client.post(
+        "/query",
+        headers=auth(token),
+        json={"artifact_id": artifact_id, "purpose": purpose},
+    )
+
+
+def assert_no_denied_query_context(body):
+    """Denied tool responses may include authorized_context=null, but no text-bearing fields."""
+    assert body.get("authorized_context") is None
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                assert key not in FORBIDDEN_QUERY_TEXT_FIELDS
+                walk(child)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    safe_body = {k: v for k, v in body.items() if k != "authorized_context"}
+    walk(safe_body)
 
 
 # ---------------------------------------------------------------------------
@@ -344,11 +370,7 @@ def test_query_audit_contains_structured_detail(seeded, client):
     tokens = seeded
 
     # CEO queries via the agent retrieval gate with a distinct purpose string.
-    resp = client.post(
-        "/query",
-        headers=auth(tokens["u_ceo"]),
-        json={"artifact_id": PHASE2, "purpose": "agent_retrieval_evidence_test"},
-    )
+    resp = query(client, tokens["u_ceo"], PHASE2, "agent_retrieval_evidence_test")
     assert resp.json()["decision"] == "allow"
     req_id = resp.json()["request_id"]
 
@@ -369,6 +391,7 @@ def test_query_audit_contains_structured_detail(seeded, client):
 
     # Traceability.
     assert event["artifact_id"] == PHASE2
+    assert event["operation"] == "query"
     assert event["request_id"]  == req_id
 
     # CEO has a capability grant → grant_id must appear.
@@ -376,6 +399,126 @@ def test_query_audit_contains_structured_detail(seeded, client):
 
     # Decision round-trip.
     assert event["decision"] == "allow"
+
+
+def test_query_allow_returns_typed_authorized_context(seeded, client):
+    tokens = seeded
+
+    resp = query(client, tokens["u_regulatory"], PHASE2, "typed_contract_allow")
+    body = resp.json()
+
+    assert body["decision"] == "allow"
+    assert body["reason"] == "capability_and_lineage_valid"
+    assert body["request_id"].startswith("req_")
+    assert "plaintext_content" not in body
+
+    assert body["audit_ref"] == {
+        "request_id": body["request_id"],
+        "operation": "query",
+        "artifact_id": PHASE2,
+        "principal": "u_regulatory",
+        "decision": "allow",
+    }
+
+    authorized_context = body["authorized_context"]
+    assert authorized_context is not None
+    assert authorized_context["artifact_id"] == PHASE2
+    assert authorized_context["title"] == "Phase II Readiness Memo"
+    assert authorized_context["sensitivity"] == "confidential"
+    assert "content" in authorized_context
+    assert "DERIVED" in authorized_context["content"]
+
+    lineage = authorized_context["lineage"]
+    assert set(lineage["included_sources"]) == {
+        "public_target_paper",
+        "internal_sar_table",
+        "toxicity_report",
+        "adverse_event_memo",
+    }
+    assert lineage["redacted_sources"] == []
+    assert lineage["revoked_sources"] == []
+
+    metadata = body["lineage_metadata"]
+    assert metadata["requires_target_grant"] is True
+    assert metadata["requires_included_source_grants"] is True
+    assert metadata["included_source_count"] == 4
+
+
+def test_query_deny_returns_typed_no_context(seeded, client):
+    tokens = seeded
+
+    resp = query(client, tokens["u_cro"], PHASE2, "typed_contract_cro_deny")
+    body = resp.json()
+
+    assert body["decision"] == "deny"
+    assert body["reason"] == "missing_capability_grant"
+    assert body["request_id"].startswith("req_")
+    assert body["audit_ref"]["request_id"] == body["request_id"]
+    assert body["audit_ref"]["operation"] == "query"
+    assert body["audit_ref"]["artifact_id"] == PHASE2
+    assert body["audit_ref"]["principal"] == "u_cro"
+    assert body["audit_ref"]["decision"] == "deny"
+    assert_no_denied_query_context(body)
+
+    metadata = body["lineage_metadata"]
+    assert metadata["requires_target_grant"] is True
+    assert metadata["requires_included_source_grants"] is True
+
+
+def test_query_after_source_revoke_denies_with_no_context(seeded, client):
+    tokens = seeded
+
+    before = query(client, tokens["u_regulatory"], PHASE2, "typed_contract_before_revoke")
+    assert before.json()["decision"] == "allow"
+    assert before.json()["authorized_context"] is not None
+
+    client.post(
+        f"/artifacts/{ADVERSE}/revoke",
+        headers=auth(tokens["u_ceo"]),
+        json={"purpose": "typed_contract_source_revoke"},
+    )
+
+    after = query(client, tokens["u_regulatory"], PHASE2, "typed_contract_after_revoke")
+    body = after.json()
+    assert body["decision"] == "deny"
+    assert body["reason"] == "derived_from_revoked_source"
+    assert_no_denied_query_context(body)
+
+
+def test_query_requires_included_source_grants(seeded, client):
+    tokens = seeded
+
+    grant_resp = client.post(
+        f"/artifacts/{PHASE2}/grant",
+        headers=auth(tokens["u_ceo"]),
+        json={
+            "subject_user_id": "u_intern",
+            "operation": "read",
+            "purpose": "typed_query_lineage_policy_regression",
+        },
+    )
+    assert grant_resp.json()["granted"] is True
+
+    resp = query(client, tokens["u_intern"], PHASE2, "typed_contract_missing_sources")
+    body = resp.json()
+    assert body["decision"] == "deny"
+    assert body["reason"] == "missing_source_lineage_capability"
+    assert_no_denied_query_context(body)
+    assert body["lineage_metadata"]["included_source_count"] == 4
+
+
+def test_query_audit_ref_matches_request_id(seeded, client):
+    tokens = seeded
+
+    resp = query(client, tokens["u_regulatory"], PHASE2, "typed_contract_audit_ref")
+    body = resp.json()
+    assert body["request_id"] == body["audit_ref"]["request_id"]
+
+    events = client.get("/audit").json()
+    event = next((e for e in events if e.get("request_id") == body["request_id"]), None)
+    assert event is not None, "Query audit event not found by request_id"
+    assert event["operation"] == "query"
+    assert event["decision"] == body["decision"]
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +628,9 @@ def test_cro_query_denied_returns_no_plaintext(seeded, client):
     body = resp.json()
     assert body["decision"] == "deny"
     assert body["reason"] == "missing_capability_grant"
+    assert body["authorized_context"] is None
+    assert body["audit_ref"]["request_id"] == body["request_id"]
+    assert body["audit_ref"]["operation"] == "query"
     assert "plaintext_content" not in body
     assert "content" not in body
     assert "context" not in body

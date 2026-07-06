@@ -2,7 +2,7 @@
 
 ## Overview
 
-BioVault is a deterministic, LLM-free capability enforcement layer that sits between AI agents and a shared artifact store. The model — any open-weight runtime — is outside the enforcement boundary. It only sees content the gate has already authorised.
+BioVault is a deterministic, LLM-free capability enforcement layer that sits between AI agents and a shared artifact store. The model — any open-weight runtime — is outside the enforcement boundary. It only sees content the gate has already authorized.
 
 **The retrieval layer (`GET /artifacts/{id}` and `POST /query`) is the enforcement boundary.** Every agent access decision happens here before any optional model generation.
 
@@ -100,7 +100,7 @@ Agent runtime (any model)
 │                                                                          │
 │  4. If decision == allow:                                                │
 │     └─ Fernet.decrypt(artifact.encrypted_content)                        │
-│     └─ return { decision, plaintext_content, title, sensitivity, … }     │
+│     └─ return authorized_context.content on /query allow; no context deny │
 │                                                                          │
 │  5. If decision == deny:                                                 │
 │     └─ return { decision, reason, request_id }  — no content             │
@@ -109,11 +109,11 @@ Agent runtime (any model)
 │
 ▼
 Agent receives response.
-If allow → pass plaintext_content as context to the model.
+If /query allow → pass authorized_context.content to the model.
 If deny  → do NOT call the model with this artifact; surface denial to user.
 │
 ▼
-Open-weight model generates output using only authorised context.
+Open-weight model generates output using only authorized context.
 ```
 
 ---
@@ -206,7 +206,7 @@ CREATE INDEX IF NOT EXISTS idx_users_token
  │   │  Agent / model runtime                              │   │
  │   │  (any open-weight model: Qwen, Llama, Mistral, …)  │   │
  │   │                                                     │   │
- │   │  Calls POST /query to retrieve authorised context.  │   │
+ │   │  Calls POST /query to retrieve authorized context.  │   │
  │   │  Generates a response from that context only.       │   │
  │   │  Cannot access any artifact that was denied.        │   │
  │   │  Does NOT influence the permission decision.        │   │
@@ -265,8 +265,8 @@ def retrieve_artifact(artifact_id: str, capability_token: str) -> dict:
 # Biotech example — CRO agent attempts Phase II memo:
 result = retrieve_artifact("phase2_readiness_memo", cro_token)
 if result["decision"] == "allow":
-    context = result["plaintext_content"]
-    # pass context to model.generate(...)
+    context = result["authorized_context"]["content"]
+    # pass context to a downstream runtime after authorization
 else:
     print(f"Access denied: {result['reason']} ({result['request_id']})")
     # reason: "missing_capability_grant" (or "derived_from_revoked_source" after adverse-event revocation)

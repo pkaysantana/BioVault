@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""External CRO science-agent demo — POST /query gate before any model synthesis.
+"""External CRO science-agent demo - POST /query gate before synthesis.
 
 Usage:
   python scripts/demo_agent_cro.py
   BIOVAULT_BASE_URL=https://your-deploy.example python scripts/demo_agent_cro.py
 
 Requires a running BioVault backend. Seeds on first run if tokens are unavailable.
-Stdlib only — no third-party dependencies.
+Stdlib only - no third-party dependencies and no model calls.
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _seed_tokens() -> dict[str, str]:
 
 
 def main() -> int:
-    print(f"BioVault CRO agent demo — base URL: {BASE_URL}")
+    print(f"BioVault CRO agent demo - base URL: {BASE_URL}")
     print(f"Agent question: {AGENT_QUESTION!r}")
     print(f"Target artifact: {ARTIFACT_ID}")
     print()
@@ -69,22 +69,34 @@ def main() -> int:
     decision = result.get("decision", "unknown")
     reason = result.get("reason", "unknown")
     request_id = result.get("request_id", "")
+    audit_ref = result.get("audit_ref") or {}
 
-    print(f"POST /query → {decision.upper()} ({reason})")
+    print(f"POST /query -> {decision.upper()} ({reason})")
     if request_id:
         print(f"request_id: {request_id}")
+    if audit_ref:
+        print(f"audit_ref.request_id: {audit_ref.get('request_id', '')}")
 
     if decision == "allow":
+        if not result.get("authorized_context"):
+            print("ERROR: Allow response missing authorized_context.", file=sys.stderr)
+            return 1
         print("WARNING: Expected DENY for External CRO on Phase II memo.")
         return 1
 
-    if result.get("plaintext_content") or result.get("content") or result.get("context"):
-        print("ERROR: Denied response must not include plaintext or context.", file=sys.stderr)
+    if result.get("authorized_context") is not None:
+        print("ERROR: Denied response must return authorized_context: null.", file=sys.stderr)
+        return 1
+
+    forbidden = {"plaintext_content", "content", "context", "synthesis"}
+    leaked = forbidden.intersection(result)
+    if leaked:
+        print(f"ERROR: Denied response leaked text fields: {sorted(leaked)}", file=sys.stderr)
         return 1
 
     print()
-    print("DENY — no synthesis from protected clinical data.")
-    print("BioVault denied access to Phase II Readiness Memo. Cannot generate summary.")
+    print("No authorized context returned; no synthesis from protected scientific data.")
+    print("BioVault denied access to Phase II Readiness Memo. No model call was made.")
     return 0
 
 

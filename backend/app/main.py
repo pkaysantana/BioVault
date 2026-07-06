@@ -50,7 +50,7 @@ fernet = Fernet(FERNET_KEY)
 # what an authenticated principal may do to a specific artifact.
 Operation = Literal["read", "derive", "revoke", "grant", "redact"]
 Decision = Literal["allow", "deny"]
-AccessMetadata = dict[str, Any]
+AccessDetail = dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +75,45 @@ class DeriveRequest(BaseModel):
     # Parents whose content is excluded from a redacted derivation.
     redact_parent_ids: list[str] = []
     reason: str = "unspecified"
+
+
+class QueryLineage(BaseModel):
+    included_sources: list[str]
+    redacted_sources: list[str]
+    revoked_sources: list[str]
+
+
+class AuthorizedContext(BaseModel):
+    artifact_id: str
+    title: str
+    content: str
+    sensitivity: str
+    lineage: QueryLineage
+
+
+class QueryLineageMetadata(BaseModel):
+    requires_target_grant: bool = True
+    requires_included_source_grants: bool
+    included_source_count: int | None = None
+    blocked_source_artifact_id: str | None = None
+    missing_source_artifact_id: str | None = None
+
+
+class QueryAuditRef(BaseModel):
+    request_id: str
+    operation: Literal["query"]
+    artifact_id: str
+    principal: str
+    decision: Decision
+
+
+class BioVaultQueryResult(BaseModel):
+    decision: Decision
+    reason: str
+    request_id: str
+    audit_ref: QueryAuditRef
+    authorized_context: AuthorizedContext | None
+    lineage_metadata: QueryLineageMetadata
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +542,7 @@ def find_grant_id(
 
 def evaluate_access(
     conn: sqlite3.Connection, user_id: str, artifact_id: str, operation: Operation
-) -> tuple[Decision, str, AccessMetadata]:
+) -> tuple[Decision, str, AccessDetail]:
     """
     Capability-based access check. Allows access only when ALL hold:
     1. User (resolved from a token, never a query param) exists.
@@ -535,7 +574,7 @@ def evaluate_access(
 
     if artifact["type"] == "derived":
         included_parents = get_included_lineage_parents(conn, artifact_id)
-        metadata: AccessMetadata = {
+        metadata: AccessDetail = {
             "source_lineage_grants_checked": operation == "read",
             "included_source_count": len(included_parents),
         }
@@ -596,12 +635,14 @@ def can_access(
     operation: Operation,
     request_id: str | None = None,
     purpose: str = "unspecified",
+    audit_operation: str | None = None,
 ) -> dict[str, Any]:
     rid = request_id or new_request_id()
     start = time.perf_counter()
     with connect() as conn:
         decision, reason, access_metadata = evaluate_access(conn, user_id, artifact_id, operation)
         latency_ms = round((time.perf_counter() - start) * 1000, 3)
+        logged_operation = audit_operation or operation
 
         # Structured provenance detail — logged on every access event.
         # Does not influence the decision; purely for audit trail quality.
@@ -609,8 +650,10 @@ def can_access(
             "request_id": rid,
             "purpose": purpose,
             "principal": user_id,
-            "operation": operation,
+            "operation": logged_operation,
         }
+        if logged_operation != operation:
+            detail["enforced_operation"] = operation
         if decision == "allow":
             grant_id = find_grant_id(conn, user_id, artifact_id, operation)
             if grant_id:
@@ -621,8 +664,14 @@ def can_access(
             detail["lineage_decision"] = "passed" if decision == "allow" else reason
             detail.update(access_metadata)
 
-        log_audit(conn, user_id, artifact_id, operation, decision, reason, latency_ms, rid, detail)
-        return {"decision": decision, "reason": reason, "latency_ms": latency_ms, "request_id": rid}
+        log_audit(conn, user_id, artifact_id, logged_operation, decision, reason, latency_ms, rid, detail)
+        return {
+            "decision": decision,
+            "reason": reason,
+            "latency_ms": latency_ms,
+            "request_id": rid,
+            "access_metadata": access_metadata,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +688,58 @@ def artifact_with_content(row: sqlite3.Row) -> dict[str, Any]:
     data = artifact_public(row)
     data["plaintext_content"] = decrypt(row["encrypted_content"])
     return data
+
+
+def query_lineage_summary(conn: sqlite3.Connection, artifact_id: str) -> dict[str, list[str]]:
+    """Return safe lineage identifiers for the agent tool contract; no plaintext."""
+    included_sources: list[str] = []
+    redacted_sources: list[str] = []
+    revoked_sources: list[str] = []
+    seen_edges: set[tuple[str, str]] = set()
+    seen_included: set[str] = set()
+    seen_redacted: set[str] = set()
+    seen_revoked: set[str] = set()
+    stack = [artifact_id]
+
+    while stack:
+        current = stack.pop()
+        rows = conn.execute(
+            """
+            SELECT a.id, a.status, e.inclusion
+            FROM artifacts a
+            JOIN lineage_edges e ON e.parent_artifact_id = a.id
+            WHERE e.child_artifact_id = ?
+            ORDER BY a.title
+            """,
+            (current,),
+        ).fetchall()
+
+        for row in rows:
+            edge = (row["id"], current)
+            if edge in seen_edges:
+                continue
+            seen_edges.add(edge)
+
+            if row["status"] in ("revoked", "quarantined") and row["id"] not in seen_revoked:
+                revoked_sources.append(row["id"])
+                seen_revoked.add(row["id"])
+
+            if row["inclusion"] == "redacted":
+                if row["id"] not in seen_redacted:
+                    redacted_sources.append(row["id"])
+                    seen_redacted.add(row["id"])
+                continue
+
+            if row["id"] not in seen_included:
+                included_sources.append(row["id"])
+                seen_included.add(row["id"])
+                stack.append(row["id"])
+
+    return {
+        "included_sources": included_sources,
+        "redacted_sources": redacted_sources,
+        "revoked_sources": revoked_sources,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -877,46 +978,79 @@ class QueryRequest(BaseModel):
     context: str = ""
 
 
-@app.post("/query")
+@app.post("/query", response_model=BioVaultQueryResult)
 def query_artifact(
     request: QueryRequest, principal_id: str = Depends(resolve_principal)
 ) -> dict[str, Any]:
     """
-    Agent-facing retrieval gate for open-weight model runtimes.
+    Typed agent-facing memory gate for open-weight model runtimes.
 
     An agent calls this endpoint BEFORE passing content to any model. If the
-    decision is 'allow', plaintext_content is returned and the agent may use it
-    as context for generation. If the decision is 'deny', no content is returned
-    and the model must not attempt to retrieve it through any other path.
+    decision is 'allow', authorized_context.content is returned and may be used
+    downstream. If the decision is 'deny', authorized_context is null and no
+    plaintext or source context is returned.
 
     The permission check is identical to GET /artifacts/{id}: same
     resolve_principal(), same evaluate_access(), same log_audit(). No model
-    call occurs here. The open-weight model sits entirely outside this boundary.
-
-    Compatible runtimes: Qwen, Llama, Mistral, GLM, and any model using a tool
-    or function-calling interface. See docs/ARCHITECTURE.md for the integration
-    pattern.
+    call occurs here. Any open-weight model sits entirely downstream.
     """
     rid = new_request_id()
-    result = can_access(principal_id, request.artifact_id, "read", rid, purpose=request.purpose)
+    result = can_access(
+        principal_id,
+        request.artifact_id,
+        "read",
+        rid,
+        purpose=request.purpose,
+        audit_operation="query",
+    )
+
+    with connect() as conn:
+        row = get_artifact(conn, request.artifact_id)
+        lineage = query_lineage_summary(conn, request.artifact_id) if row else {
+            "included_sources": [],
+            "redacted_sources": [],
+            "revoked_sources": [],
+        }
+
+    requires_source_grants = bool(row and row["type"] == "derived")
+    lineage_metadata: dict[str, Any] = {
+        "requires_target_grant": True,
+        "requires_included_source_grants": requires_source_grants,
+    }
+    access_metadata = result.get("access_metadata") or {}
+    if row and row["type"] == "derived" and (
+        result["decision"] == "allow" or "included_source_count" in access_metadata
+    ):
+        lineage_metadata["included_source_count"] = access_metadata.get(
+            "included_source_count", len(lineage["included_sources"])
+        )
+    for key in ("blocked_source_artifact_id", "missing_source_artifact_id"):
+        if key in access_metadata:
+            lineage_metadata[key] = access_metadata[key]
 
     response: dict[str, Any] = {
         "decision": result["decision"],
         "reason": result["reason"],
-        "latency_ms": result["latency_ms"],
         "request_id": rid,
-        "artifact_id": request.artifact_id,
-        "principal_id": principal_id,
+        "audit_ref": {
+            "request_id": rid,
+            "operation": "query",
+            "artifact_id": request.artifact_id,
+            "principal": principal_id,
+            "decision": result["decision"],
+        },
+        "authorized_context": None,
+        "lineage_metadata": lineage_metadata,
     }
 
-    if result["decision"] == "allow":
-        with connect() as conn:
-            row = get_artifact(conn, request.artifact_id)
-        if row:
-            response["title"] = row["title"]
-            response["sensitivity"] = row["sensitivity"]
-            response["status"] = row["status"]
-            response["plaintext_content"] = decrypt(row["encrypted_content"])
+    if result["decision"] == "allow" and row:
+        response["authorized_context"] = {
+            "artifact_id": row["id"],
+            "title": row["title"],
+            "content": decrypt(row["encrypted_content"]),
+            "sensitivity": row["sensitivity"],
+            "lineage": lineage,
+        }
 
     return response
 

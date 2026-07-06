@@ -39,6 +39,20 @@ BioVault enforces the source-lineage rule directly in this prototype. A compiled
 
 ---
 
+## Agent tool boundary
+
+Agents call `POST /query` as a typed memory tool. BioVault is model-agnostic: the permission decision is deterministic, and downstream open-weight generation only happens after BioVault returns allow.
+
+```
+agent -> BioVault /query -> allow/deny
+```
+
+On allow, BioVault returns `authorized_context`. On deny, `authorized_context` is `null` and no plaintext is returned. Any open-weight model sits downstream of this boundary and never decides permission.
+
+Typed contract and adapter stub: [docs/AGENT_TOOL_CONTRACT.md](docs/AGENT_TOOL_CONTRACT.md)
+
+---
+
 ## Demo: BVK-14 kinase programme
 
 Seed with **Start / Reset Demo** or `POST /seed`.
@@ -91,13 +105,27 @@ The **permission path is model-free**. No closed-model dependencies. Optional ge
 ```python
 # Agent calls BioVault before passing content to any model
 result = httpx.post("/query", json={"artifact_id": "phase2_readiness_memo", ...},
-                    headers={"Authorization": f"Bearer {cro_token}"})
+                    headers={"Authorization": f"Bearer {cro_token}"}).json()
 if result["decision"] != "allow":
     # Do not call the model — surface denial to user
-    ...
+    return result["reason"]
+context = result["authorized_context"]["content"]
 ```
 
 Nothing in this repo calls a model yet; the hook is the integration point.
+
+---
+
+## Production Path
+
+The current repo is an educational prototype, but the production path is explicit:
+
+- Postgres is the production source of truth for artifacts, versions, grants, lineage, revocation, audit, policy versions, and redaction attestations.
+- SQLite is demo/local only.
+- BioVault should use standards-based OIDC + SCIM identity adapters, with Microsoft Entra as the first enterprise provider profile.
+- The permission path remains deterministic and model-free; no model call or required IdP network call belongs in the hot path.
+
+Architecture notes: [docs/PERSISTENCE_ARCHITECTURE.md](docs/PERSISTENCE_ARCHITECTURE.md) · [ADR-001](docs/ADR-001-postgres-first-persistence.md) · [ADR-002](docs/ADR-002-oidc-scim-entra-first.md)
 
 ---
 
@@ -154,7 +182,7 @@ cd backend && py -3 -m pytest -q
 cd frontend && npm run build
 ```
 
-Planning: [docs/TODO.md](docs/TODO.md) · [docs/BEST_CASE.md](docs/BEST_CASE.md) · Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+Planning: [docs/TODO.md](docs/TODO.md) · [docs/BEST_CASE.md](docs/BEST_CASE.md) · Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Agent tool: [docs/AGENT_TOOL_CONTRACT.md](docs/AGENT_TOOL_CONTRACT.md) · Production: [docs/PERSISTENCE_ARCHITECTURE.md](docs/PERSISTENCE_ARCHITECTURE.md)
 
 ### Optional CRO agent script
 

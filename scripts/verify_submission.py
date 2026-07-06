@@ -31,7 +31,7 @@ EXECUTABLE_MODEL_PATTERNS = (
     "anth" + "ropic",
     "lang" + "chain",
     "llama" + "_index",
-    "chat" + ".completions",
+    "chat" + "." + "comp" + "letions",
     "responses" + ".create",
     "model" + ".generate",
     "LLM" + "Chain",
@@ -120,6 +120,8 @@ CLOSED_MODEL_DEPENDENCIES = (
     "xai",
     "grok",
 )
+
+LOCAL_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)#]+(?:\.md|\.py))(?:#[^)]+)?\)")
 
 
 class Reporter:
@@ -336,6 +338,39 @@ def check_closed_model_dependencies(reporter: Reporter) -> None:
         reporter.pass_("closed-model dependency scan")
 
 
+def check_local_reference_integrity(reporter: Reporter) -> None:
+    scan_files = [ROOT / "README.md"]
+    docs_dir = ROOT / "docs"
+    if docs_dir.exists():
+        scan_files.extend(sorted(docs_dir.glob("*.md")))
+
+    missing: list[str] = []
+    for source in scan_files:
+        if not source.exists():
+            continue
+        text = read_text(source)
+        for match in LOCAL_LINK_PATTERN.finditer(text):
+            raw_target = match.group(1)
+            if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", raw_target):
+                continue
+            target = (source.parent / raw_target).resolve()
+            try:
+                target.relative_to(ROOT)
+            except ValueError:
+                continue
+            if target.suffix not in {".md", ".py"}:
+                continue
+            if target.parent not in {ROOT / "docs", ROOT / "scripts"}:
+                continue
+            if not target.exists():
+                missing.append(f"{rel(source)} -> {raw_target}")
+
+    if missing:
+        reporter.fail("missing local README/docs references: " + ", ".join(missing))
+    else:
+        reporter.pass_("README/docs local reference integrity")
+
+
 def check_required_terms(reporter: Reporter) -> None:
     readme = ROOT / "README.md"
     spec = ROOT / "docs" / "JUDGE_SPEC.md"
@@ -453,6 +488,7 @@ def main() -> int:
     check_forbidden_legacy_terms(reporter)
     check_executable_model_patterns(reporter)
     check_closed_model_dependencies(reporter)
+    check_local_reference_integrity(reporter)
     check_required_terms(reporter)
     check_spec_semantics(reporter)
     check_backend_tests(reporter)
