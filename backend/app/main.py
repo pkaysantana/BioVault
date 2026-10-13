@@ -52,6 +52,9 @@ fernet = Fernet(FERNET_KEY)
 # 'audit' scopes visibility of audit events and lineage metadata for an artifact.
 Operation = Literal["read", "derive", "revoke", "grant", "redact", "audit"]
 ALL_OPERATIONS: tuple[str, ...] = get_args(Operation)
+OWNER_OPERATIONS: tuple[str, ...] = ("read", "derive", "revoke", "grant", "redact")
+# Oversight principal: holds 'audit' on every artifact so the audit trail stays reviewable.
+AUDIT_PRINCIPAL_ID = "u_ceo"
 Decision = Literal["allow", "deny"]
 AccessDetail = dict[str, Any]
 
@@ -927,9 +930,13 @@ def seed(_: None = Depends(require_seed_admin)) -> dict[str, Any]:
 
 
 @app.get("/users")
-def list_users(principal_id: str = Depends(resolve_principal)) -> list[dict[str, Any]]:  # noqa: ARG001
+def list_users(principal_id: str = Depends(resolve_principal)) -> list[dict[str, Any]]:
+    """Full directory only for principals holding 'audit'; everyone else sees their own record."""
     with connect() as conn:
-        rows = conn.execute("SELECT id, name, role, team FROM users ORDER BY team, role")
+        if live_grant_artifact_ids(conn, principal_id, ("audit",)):
+            rows = conn.execute("SELECT id, name, role, team FROM users ORDER BY team, role")
+        else:
+            rows = conn.execute("SELECT id, name, role, team FROM users WHERE id = ?", (principal_id,))
         return [dict(r) for r in rows]
 
 
@@ -1240,11 +1247,12 @@ def derive_artifact(
                 (attestation_id, artifact_id, principal_id, request.reason, now_iso(), json.dumps(detail)),
             )
 
-        grant_many(conn, principal_id, [artifact_id], list(ALL_OPERATIONS))
+        grant_many(conn, principal_id, [artifact_id], list(OWNER_OPERATIONS))
+        grant_many(conn, AUDIT_PRINCIPAL_ID, [artifact_id], ["audit"])
         if request.redacted:
             grant_many(conn, "u_regulatory", [artifact_id], ["read"])
-            if principal_id != "u_ceo":
-                grant_many(conn, "u_ceo", [artifact_id], list(ALL_OPERATIONS))
+            if principal_id != AUDIT_PRINCIPAL_ID:
+                grant_many(conn, AUDIT_PRINCIPAL_ID, [artifact_id], list(OWNER_OPERATIONS))
 
         log_audit(conn, principal_id, artifact_id, op, "allow",
                   "redacted_artifact_created" if request.redacted else "derived_artifact_created",

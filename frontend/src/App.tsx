@@ -830,7 +830,7 @@ export default function App() {
 
   const maskedToken =
     selectedUser && currentToken
-      ? `${currentToken.slice(0, 6)}…${currentToken.slice(-4)}`
+      ? `••••${currentToken.slice(-4)}`
       : initializing || loading
         ? "loading token"
         : "Click Start / Reset Demo";

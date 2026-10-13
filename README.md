@@ -153,7 +153,7 @@ Open `http://localhost:5173`, enter the demo admin token and click **Start / Res
 |---|---|---|---|
 | GET | `/health` | — | Liveness |
 | POST | `/seed` | Admin bearer + `BIOVAULT_DEMO_MODE` | Reset DB; biotech demo; returns bearer tokens once. 403 when demo mode is off |
-| GET | `/users` | Bearer | Principal directory (id, name, role, team) |
+| GET | `/users` | Bearer | Full directory (id, name, role, team) for principals holding `audit`; others get only their own record |
 | GET | `/artifacts` | Bearer | Metadata for artifacts the caller holds a live grant on |
 | GET | `/artifacts/{id}` | Bearer | Read with permission check + audit |
 | POST | `/query` | Bearer | Agent gate — content only if allowed |

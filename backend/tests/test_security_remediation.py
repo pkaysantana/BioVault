@@ -301,3 +301,33 @@ def test_redacted_derivative_denied_when_included_source_revoked(seeded, client)
                     json={"artifact_id": redacted_id}).json()
     assert q["decision"] == "deny" and q["authorized_context"] is None
     assert q["lineage_metadata"]["blocked_source_artifact_id"] == "toxicity_report"
+
+
+# ---------------------------------------------------------------------------
+# Least privilege for the remediation itself
+# ---------------------------------------------------------------------------
+
+def test_users_directory_limited_to_audit_holders(seeded, client):
+    for uid in ("u_cro", "u_intern", "u_regulatory"):
+        users = client.get("/users", headers=auth(seeded[uid])).json()
+        assert [u["id"] for u in users] == [uid]
+    ceo = client.get("/users", headers=auth(seeded["u_ceo"])).json()
+    assert len(ceo) == 6
+    assert all(set(u) == {"id", "name", "role", "team"} for u in ceo)
+
+
+def test_derivative_creator_gets_no_audit_capability(seeded, client):
+    r = client.post("/derive", headers=auth(seeded["u_compchem"]), json={
+        "title": "SAR Docking Summary",
+        "parent_artifact_ids": ["public_target_paper", "internal_sar_table"],
+    })
+    assert r.json()["created"] is True
+    new_id = r.json()["artifact"]["id"]
+    read(client, seeded["u_research"], new_id)
+
+    compchem_events = client.get("/audit", headers=auth(seeded["u_compchem"])).json()
+    assert {e["user_id"] for e in compchem_events} == {"u_compchem"}
+    assert [u["id"] for u in client.get("/users", headers=auth(seeded["u_compchem"])).json()] == ["u_compchem"]
+
+    ceo_events = client.get("/audit", headers=auth(seeded["u_ceo"])).json()
+    assert any(e["artifact_id"] == new_id and e["user_id"] == "u_research" for e in ceo_events)
