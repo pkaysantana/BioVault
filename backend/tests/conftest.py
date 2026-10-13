@@ -15,6 +15,11 @@ if _TMP_DB.exists():
     _TMP_DB.unlink()
 os.environ["BIOVAULT_DB"] = str(_TMP_DB)
 
+# Test-only demo admin credential; not a real secret.
+ADMIN_TOKEN = "test-only-demo-admin-token-0123456789"
+os.environ["BIOVAULT_DEMO_MODE"] = "true"
+os.environ["BIOVAULT_ADMIN_TOKEN"] = ADMIN_TOKEN
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
@@ -29,7 +34,7 @@ def client():
 @pytest.fixture()
 def seeded(client):
     """Seed the biotech dataset and return the plaintext principal token map."""
-    resp = client.post("/seed")
+    resp = client.post("/seed", headers=auth(ADMIN_TOKEN))
     assert resp.status_code == 200
     return resp.json()["tokens"]
 

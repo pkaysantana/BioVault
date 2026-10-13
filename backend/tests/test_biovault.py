@@ -160,7 +160,7 @@ def test_derived_artifact_requires_included_source_grants(seeded, client):
     assert "plaintext_content" not in body["artifact"]
 
     req_id = body["access"]["request_id"]
-    events = client.get("/audit").json()
+    events = client.get("/audit", headers=auth(tokens["u_ceo"])).json()
     event = next((e for e in events if e.get("request_id") == req_id), None)
     assert event is not None, "Deny audit event not found by request_id"
     assert event["decision"] == "deny"
@@ -227,7 +227,7 @@ def test_governed_redaction_succeeds_on_healthy_sources(seeded, client):
     new_id = r.json()["artifact"]["id"]
 
     # Lineage records the attestation and per-edge inclusion metadata.
-    lin = client.get(f"/lineage/{new_id}").json()
+    lin = client.get(f"/lineage/{new_id}", headers=auth(tokens["u_ceo"])).json()
     assert lin["redaction_attestation"] is not None
     inclusions = {p["artifact"]["id"]: p["inclusion"] for p in lin["parents"]}
     assert inclusions[ADVERSE] == "redacted"
@@ -286,7 +286,7 @@ def test_audit_records_all_operation_types(seeded, client):
                 json={"title": "D", "parent_artifact_ids": ["public_target_paper"], "reason": "t"})  # derive
     client.post(f"/artifacts/{ADVERSE}/revoke", headers=auth(tokens["u_ceo"]), json={})  # revoke
 
-    events = client.get("/audit").json()
+    events = client.get("/audit", headers=auth(tokens["u_ceo"])).json()
     ops = {e["operation"] for e in events}
     decisions = {e["decision"] for e in events}
     assert {"read", "grant", "derive", "revoke"}.issubset(ops)
@@ -317,7 +317,7 @@ def test_permission_latency_p99_under_200ms(seeded, client):
     assert p99 < 200.0, f"P99 latency {p99:.2f}ms exceeds 200ms budget"
 
     # The server-side metric should also be well under budget.
-    metrics = client.get("/metrics/permission-latency").json()
+    metrics = client.get("/metrics/permission-latency", headers=auth(tokens["u_ceo"])).json()
     assert metrics["p99_ms"] < 200.0
 
 
@@ -338,7 +338,7 @@ def test_artifact_read_audit_contains_structured_detail(seeded, client):
     allow_req_id = allow_resp.json()["access"]["request_id"]
     deny_req_id  = deny_resp.json()["access"]["request_id"]
 
-    events = client.get("/audit").json()
+    events = client.get("/audit", headers=auth(tokens["u_ceo"])).json()
 
     allow_event = next((e for e in events if e.get("request_id") == allow_req_id), None)
     deny_event  = next((e for e in events if e.get("request_id") == deny_req_id), None)
@@ -374,7 +374,7 @@ def test_query_audit_contains_structured_detail(seeded, client):
     assert resp.json()["decision"] == "allow"
     req_id = resp.json()["request_id"]
 
-    events = client.get("/audit").json()
+    events = client.get("/audit", headers=auth(tokens["u_ceo"])).json()
     event = next((e for e in events if e.get("request_id") == req_id), None)
 
     assert event is not None, "Query audit event not found by request_id"
@@ -514,7 +514,7 @@ def test_query_audit_ref_matches_request_id(seeded, client):
     body = resp.json()
     assert body["request_id"] == body["audit_ref"]["request_id"]
 
-    events = client.get("/audit").json()
+    events = client.get("/audit", headers=auth(tokens["u_ceo"])).json()
     event = next((e for e in events if e.get("request_id") == body["request_id"]), None)
     assert event is not None, "Query audit event not found by request_id"
     assert event["operation"] == "query"
@@ -576,7 +576,7 @@ def test_stale_capability_denied_after_source_revoke(seeded, client):
     assert "plaintext_content" not in body["artifact"]
 
     req_id = body["access"]["request_id"]
-    events = client.get("/audit").json()
+    events = client.get("/audit", headers=auth(tokens["u_ceo"])).json()
     event = next((e for e in events if e.get("request_id") == req_id), None)
     assert event is not None, "Deny audit event not found by request_id"
     assert event["decision"] == "deny"
@@ -609,7 +609,7 @@ def test_expired_grant_denies_artifact_read(seeded, client):
     assert "plaintext_content" not in body["artifact"]
 
     req_id = body["access"]["request_id"]
-    events = client.get("/audit").json()
+    events = client.get("/audit", headers=auth(tokens["u_ceo"])).json()
     event = next((e for e in events if e.get("request_id") == req_id), None)
     assert event is not None, "Deny audit event not found by request_id"
     assert event["decision"] == "deny"
@@ -637,7 +637,7 @@ def test_cro_query_denied_returns_no_plaintext(seeded, client):
     assert "synthesis" not in body
 
     req_id = body["request_id"]
-    events = client.get("/audit").json()
+    events = client.get("/audit", headers=auth(tokens["u_ceo"])).json()
     event = next((e for e in events if e.get("request_id") == req_id), None)
     assert event is not None, "Query deny audit event not found by request_id"
     assert event["decision"] == "deny"

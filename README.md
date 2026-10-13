@@ -55,7 +55,7 @@ Typed contract and adapter stub: [docs/AGENT_TOOL_CONTRACT.md](docs/AGENT_TOOL_C
 
 ## Demo: BVK-14 kinase programme
 
-Seed with **Start / Reset Demo** or `POST /seed`.
+Seed with **Start / Reset Demo** (enter the demo admin token) or `POST /seed` with `Authorization: Bearer $BIOVAULT_ADMIN_TOKEN`. Seeding is disabled unless `BIOVAULT_DEMO_MODE=true`.
 
 **Story:** An AI science program (kinase BVK-14) derives a **Phase II Readiness Memo** from source documents including an **Adverse Event Memo**. External CRO must not access the derived memo. When the adverse-event source is revoked, the Phase II memo quarantines automatically.
 
@@ -145,18 +145,24 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` — BVK-14 demo loads automatically.
+Open `http://localhost:5173`, enter the demo admin token and click **Start / Reset Demo**. For local seeding, start the backend with `BIOVAULT_DEMO_MODE=true` and a `BIOVAULT_ADMIN_TOKEN` of at least 24 characters (see [`backend/.env.example`](backend/.env.example)).
 
 ### API (`backend/app/main.py`)
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/health` | — | Liveness |
-| POST | `/seed` | — | Reset DB; biotech demo; returns bearer tokens once |
+| POST | `/seed` | Admin bearer + `BIOVAULT_DEMO_MODE` | Reset DB; biotech demo; returns bearer tokens once. 403 when demo mode is off |
+| GET | `/users` | Bearer | Full directory (id, name, role, team) for principals holding `audit`; others get only their own record |
+| GET | `/artifacts` | Bearer | Metadata for artifacts the caller holds a live grant on |
 | GET | `/artifacts/{id}` | Bearer | Read with permission check + audit |
 | POST | `/query` | Bearer | Agent gate — content only if allowed |
+| POST | `/artifacts/{id}/grant` | Bearer | Delegate a capability the issuer holds; no self-grants; `expires_at` must be ISO 8601 with an offset |
 | POST | `/artifacts/{id}/revoke` | Bearer | Revoke source + quarantine descendants |
-| GET | `/lineage/{id}`, `/audit`, `/metrics/permission-latency` | — | Lineage, audit, latency |
+| GET | `/lineage/{id}` | Bearer (`read` or `audit` on target) | Lineage; nodes the caller cannot see are omitted |
+| GET | `/audit`, `/metrics/permission-latency` | Bearer | Caller's own events plus events on artifacts where it holds `audit` |
+
+Bearer tokens are accepted only in the `Authorization` header; `?token=` / `?access_token=` are rejected with 401.
 
 ### Tests
 

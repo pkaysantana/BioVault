@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -10,12 +11,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, median, quantiles
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from cryptography.fernet import Fernet
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.sika_route import (
     KASPA_POLICY_HASH_LABEL,
@@ -48,7 +49,12 @@ fernet = Fernet(FERNET_KEY)
 
 # Capability operations. Identity is proven by a principal token; these scope
 # what an authenticated principal may do to a specific artifact.
-Operation = Literal["read", "derive", "revoke", "grant", "redact"]
+# 'audit' scopes visibility of audit events and lineage metadata for an artifact.
+Operation = Literal["read", "derive", "revoke", "grant", "redact", "audit"]
+ALL_OPERATIONS: tuple[str, ...] = get_args(Operation)
+OWNER_OPERATIONS: tuple[str, ...] = ("read", "derive", "revoke", "grant", "redact")
+# Oversight principal: holds 'audit' on every artifact so the audit trail stays reviewable.
+AUDIT_PRINCIPAL_ID = "u_ceo"
 Decision = Literal["allow", "deny"]
 AccessDetail = dict[str, Any]
 
@@ -57,11 +63,28 @@ AccessDetail = dict[str, Any]
 # Request models
 # ---------------------------------------------------------------------------
 
+def parse_aware_utc(value: str) -> datetime:
+    """Parse an ISO 8601 timestamp with an explicit UTC offset and normalise it to UTC."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must include a timezone offset")
+    return parsed.astimezone(timezone.utc)
+
+
 class GrantRequest(BaseModel):
     subject_user_id: str
     operation: Operation = "read"
-    expires_at: str | None = None
+    expires_at: datetime | None = None
     purpose: str = "unspecified"
+
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def _expiry_is_offset_aware_iso8601(cls, value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("expires_at must be an ISO 8601 string with a timezone offset")
+        return parse_aware_utc(value)
 
 
 class RevokeRequest(BaseModel):
@@ -329,25 +352,35 @@ app.add_middleware(
 # Principal authentication (Patch 1)
 # ---------------------------------------------------------------------------
 
+URL_TOKEN_PARAMS = ("token", "access_token")
+MIN_ADMIN_TOKEN_LENGTH = 24
+
+
+def reject_url_tokens(request: Request) -> None:
+    """Secrets in URLs leak via logs, history and referrers, so refuse them outright."""
+    if any(name in request.query_params for name in URL_TOKEN_PARAMS):
+        raise HTTPException(status_code=401, detail={"reason": "token_in_url_rejected"})
+
+
+def bearer_from_header(authorization: str | None) -> str | None:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip() or None
+    return None
+
+
 def resolve_principal(
+    request: Request,
     authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ) -> str:
     """
     Resolve the acting principal from a capability token.
 
     Identity is NEVER taken from a caller-supplied user_id. The token is the only
     authority: we hash the presented secret and look up the owning principal.
-    Accepts `Authorization: Bearer <token>` (preferred) or a `?token=` query
-    param (convenience for curl / Swagger). The query token is still a secret
-    capability token, not an identity claim.
+    Only `Authorization: Bearer <token>` is accepted; tokens in the URL are rejected.
     """
-    raw: str | None = None
-    if authorization and authorization.lower().startswith("bearer "):
-        raw = authorization[7:].strip()
-    elif token:
-        raw = token.strip()
-
+    reject_url_tokens(request)
+    raw = bearer_from_header(authorization)
     if not raw:
         raise HTTPException(status_code=401, detail={"reason": "missing_principal_token"})
 
@@ -358,6 +391,28 @@ def resolve_principal(
     if not row:
         raise HTTPException(status_code=401, detail={"reason": "invalid_principal_token"})
     return row["id"]
+
+
+def demo_mode_enabled() -> bool:
+    return os.environ.get("BIOVAULT_DEMO_MODE", "").lower() in ("1", "true", "yes")
+
+
+def require_seed_admin(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> None:
+    """/seed is destructive: it needs demo mode AND the configured admin bearer token."""
+    reject_url_tokens(request)
+    if not demo_mode_enabled():
+        raise HTTPException(status_code=403, detail={"reason": "seed_disabled"})
+    expected = os.environ.get("BIOVAULT_ADMIN_TOKEN", "")
+    if len(expected) < MIN_ADMIN_TOKEN_LENGTH:
+        raise HTTPException(status_code=403, detail={"reason": "admin_token_not_configured"})
+    presented = bearer_from_header(authorization)
+    if not presented:
+        raise HTTPException(status_code=401, detail={"reason": "missing_admin_token"})
+    if not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail={"reason": "invalid_admin_token"})
 
 
 # ---------------------------------------------------------------------------
@@ -499,41 +554,51 @@ def get_transitive_children(conn: sqlite3.Connection, artifact_id: str) -> list[
     return rows
 
 
-def has_grant(
-    conn: sqlite3.Connection, user_id: str, artifact_id: str, operation: Operation
-) -> bool:
-    grant = conn.execute(
-        """
-        SELECT 1 FROM capability_grants
-        WHERE user_id = ?
-          AND artifact_id = ?
-          AND operation = ?
-          AND revoked = 0
-          AND (expires_at IS NULL OR expires_at > ?)
-        LIMIT 1
-        """,
-        (user_id, artifact_id, operation, now_iso()),
-    ).fetchone()
-    return grant is not None
+def grant_is_live(expires_at: str | None) -> bool:
+    if expires_at is None:
+        return True
+    try:
+        return parse_aware_utc(expires_at) > datetime.now(timezone.utc)
+    except ValueError:
+        # Malformed or offset-less legacy rows fail closed.
+        return False
 
 
 def find_grant_id(
     conn: sqlite3.Connection, user_id: str, artifact_id: str, operation: Operation
 ) -> str | None:
-    """Return the id of the capability grant that would be (or was) used for this access."""
-    row = conn.execute(
+    """Return the id of a live (non-revoked, non-expired) grant for this access."""
+    rows = conn.execute(
         """
-        SELECT id FROM capability_grants
+        SELECT id, expires_at FROM capability_grants
         WHERE user_id = ?
           AND artifact_id = ?
           AND operation = ?
           AND revoked = 0
-          AND (expires_at IS NULL OR expires_at > ?)
-        LIMIT 1
         """,
-        (user_id, artifact_id, operation, now_iso()),
-    ).fetchone()
-    return row["id"] if row else None
+        (user_id, artifact_id, operation),
+    ).fetchall()
+    return next((r["id"] for r in rows if grant_is_live(r["expires_at"])), None)
+
+
+def has_grant(
+    conn: sqlite3.Connection, user_id: str, artifact_id: str, operation: Operation
+) -> bool:
+    return find_grant_id(conn, user_id, artifact_id, operation) is not None
+
+
+def live_grant_artifact_ids(
+    conn: sqlite3.Connection, user_id: str, operations: tuple[str, ...]
+) -> set[str]:
+    placeholders = ",".join("?" * len(operations))
+    rows = conn.execute(
+        f"""
+        SELECT artifact_id, expires_at FROM capability_grants
+        WHERE user_id = ? AND revoked = 0 AND operation IN ({placeholders})
+        """,
+        (user_id, *operations),
+    ).fetchall()
+    return {r["artifact_id"] for r in rows if grant_is_live(r["expires_at"])}
 
 
 # ---------------------------------------------------------------------------
@@ -818,7 +883,7 @@ def _seed_biotech(conn: sqlite3.Connection) -> tuple[int, int, dict[str, str]]:
         )
 
     all_ids = [a[0] for a in artifacts]
-    grant_many(conn, "u_ceo", all_ids, ["read", "derive", "revoke", "grant", "redact"])
+    grant_many(conn, "u_ceo", all_ids, list(ALL_OPERATIONS))
     grant_many(conn, "u_regulatory",
                ["public_target_paper", "internal_sar_table", "toxicity_report",
                 "adverse_event_memo", "phase2_readiness_memo"], ["read"])
@@ -834,10 +899,11 @@ def _seed_biotech(conn: sqlite3.Connection) -> tuple[int, int, dict[str, str]]:
 
 
 @app.post("/seed")
-def seed() -> dict[str, Any]:
+def seed(_: None = Depends(require_seed_admin)) -> dict[str, Any]:
     """Reset all tables and load the BVK-14 biotech demo dataset.
 
-    Returns plaintext principal tokens ONCE (demo only). Only hashes are stored.
+    Disabled unless BIOVAULT_DEMO_MODE is set, and requires the BIOVAULT_ADMIN_TOKEN
+    bearer. Returns plaintext principal tokens ONCE (demo only). Only hashes are stored.
     """
     init_db()
     with connect() as conn:
@@ -864,17 +930,23 @@ def seed() -> dict[str, Any]:
 
 
 @app.get("/users")
-def list_users() -> list[dict[str, Any]]:
+def list_users(principal_id: str = Depends(resolve_principal)) -> list[dict[str, Any]]:
+    """Full directory only for principals holding 'audit'; everyone else sees their own record."""
     with connect() as conn:
-        rows = conn.execute("SELECT id, name, role, team FROM users ORDER BY team, role")
+        if live_grant_artifact_ids(conn, principal_id, ("audit",)):
+            rows = conn.execute("SELECT id, name, role, team FROM users ORDER BY team, role")
+        else:
+            rows = conn.execute("SELECT id, name, role, team FROM users WHERE id = ?", (principal_id,))
         return [dict(r) for r in rows]
 
 
 @app.get("/artifacts")
-def list_artifacts() -> list[dict[str, Any]]:
+def list_artifacts(principal_id: str = Depends(resolve_principal)) -> list[dict[str, Any]]:
+    """List metadata only for artifacts on which the caller holds a live grant."""
     with connect() as conn:
+        visible = live_grant_artifact_ids(conn, principal_id, ALL_OPERATIONS)
         rows = conn.execute("SELECT * FROM artifacts ORDER BY created_at, title").fetchall()
-        return [artifact_public(row) for row in rows]
+        return [artifact_public(row) for row in rows if row["id"] in visible]
 
 
 @app.get("/artifacts/{artifact_id}")
@@ -916,10 +988,28 @@ def grant_artifact(
             )
         return {"access": issuer_check, "granted": False, "grant_id": None}
 
+    expires_at = request.expires_at.isoformat() if request.expires_at else None
     with connect() as conn:
         if not conn.execute("SELECT 1 FROM users WHERE id = ?", (request.subject_user_id,)).fetchone():
             raise HTTPException(status_code=404, detail="subject_not_found")
-        grant_id = add_grant(conn, request.subject_user_id, artifact_id, request.operation, request.expires_at)
+
+        # Delegation ceiling: no self-grants, and an issuer can only hand out
+        # capabilities it holds itself ('grant' alone never confers 'read').
+        denial = None
+        if request.subject_user_id == issuer_id:
+            denial = "self_grant_forbidden"
+        elif not has_grant(conn, issuer_id, artifact_id, request.operation):
+            denial = "delegation_exceeds_issuer_capability"
+        if denial:
+            log_audit(
+                conn, issuer_id, artifact_id, "grant", "deny", denial, 0.0, rid,
+                {"issuer": issuer_id, "subject": request.subject_user_id,
+                 "scope": request.operation, "purpose": request.purpose},
+            )
+            return {"access": {**issuer_check, "decision": "deny", "reason": denial},
+                    "granted": False, "grant_id": None}
+
+        grant_id = add_grant(conn, request.subject_user_id, artifact_id, request.operation, expires_at)
         log_audit(
             conn, issuer_id, artifact_id, "grant", "allow", "capability_granted", 0.0, rid,
             {"grant_id": grant_id, "issuer": issuer_id, "subject": request.subject_user_id,
@@ -935,7 +1025,7 @@ def grant_artifact(
                 "subject": request.subject_user_id,
                 "scope": request.operation,
                 "purpose": request.purpose,
-                "expires_at": request.expires_at,
+                "expires_at": expires_at,
                 "request_id": rid,
             },
         }
@@ -956,7 +1046,11 @@ def revoke_artifact(
             raise HTTPException(status_code=404, detail="artifact_not_found")
 
         conn.execute("UPDATE artifacts SET status = 'revoked' WHERE id = ?", (artifact_id,))
-        conn.execute("UPDATE capability_grants SET revoked = 1 WHERE artifact_id = ?", (artifact_id,))
+        # Audit visibility survives revocation so the revoked source stays reviewable.
+        conn.execute(
+            "UPDATE capability_grants SET revoked = 1 WHERE artifact_id = ? AND operation != 'audit'",
+            (artifact_id,),
+        )
         log_audit(conn, principal_id, artifact_id, "revoke", "allow", "source_revoked", 0.0, rid,
                   {"purpose": request.purpose})
 
@@ -1069,6 +1163,14 @@ def derive_artifact(
 
     # Patch 2: redaction must not bypass parent permissions or launder revoked sources.
     if request.redacted:
+        included_parents = [p for p in request.parent_artifact_ids if p not in request.redact_parent_ids]
+        if not included_parents:
+            with connect() as conn:
+                log_audit(conn, principal_id, ",".join(request.parent_artifact_ids), "redact", "deny",
+                          "redaction_must_include_source", 0.0, rid,
+                          {"redact_parent_ids": request.redact_parent_ids})
+            return {"created": False, "reason": "redaction_must_include_source", "parent_checks": []}
+
         with connect() as conn:
             revoked_parents = [
                 pid for pid in request.parent_artifact_ids
@@ -1145,11 +1247,12 @@ def derive_artifact(
                 (attestation_id, artifact_id, principal_id, request.reason, now_iso(), json.dumps(detail)),
             )
 
-        grant_many(conn, principal_id, [artifact_id], ["read", "derive", "revoke", "grant", "redact"])
+        grant_many(conn, principal_id, [artifact_id], list(OWNER_OPERATIONS))
+        grant_many(conn, AUDIT_PRINCIPAL_ID, [artifact_id], ["audit"])
         if request.redacted:
             grant_many(conn, "u_regulatory", [artifact_id], ["read"])
-            if principal_id != "u_ceo":
-                grant_many(conn, "u_ceo", [artifact_id], ["read", "derive", "revoke", "grant", "redact"])
+            if principal_id != AUDIT_PRINCIPAL_ID:
+                grant_many(conn, AUDIT_PRINCIPAL_ID, [artifact_id], list(OWNER_OPERATIONS))
 
         log_audit(conn, principal_id, artifact_id, op, "allow",
                   "redacted_artifact_created" if request.redacted else "derived_artifact_created",
@@ -1163,12 +1266,17 @@ def derive_artifact(
         }
 
 
+LINEAGE_VISIBILITY_OPERATIONS = ("read", "audit")
+
+
 @app.get("/lineage/{artifact_id}")
-def lineage(artifact_id: str) -> dict[str, Any]:
+def lineage(artifact_id: str, principal_id: str = Depends(resolve_principal)) -> dict[str, Any]:
+    """Lineage metadata for callers holding read or audit on the target; other nodes are hidden."""
     with connect() as conn:
-        artifact = get_artifact(conn, artifact_id)
+        visible = live_grant_artifact_ids(conn, principal_id, LINEAGE_VISIBILITY_OPERATIONS)
+        artifact = get_artifact(conn, artifact_id) if artifact_id in visible else None
         if not artifact:
-            raise HTTPException(status_code=404, detail="artifact_not_found")
+            raise HTTPException(status_code=403, detail={"reason": "missing_lineage_visibility"})
 
         # Parents with edge metadata (inclusion / source hash / reason).
         parent_edges = conn.execute(
@@ -1183,6 +1291,8 @@ def lineage(artifact_id: str) -> dict[str, Any]:
         ).fetchall()
         parents = []
         for row in parent_edges:
+            if row["id"] not in visible:
+                continue
             data = artifact_public(row)
             data.pop("inclusion", None)
             parents.append({
@@ -1210,20 +1320,35 @@ def lineage(artifact_id: str) -> dict[str, Any]:
         return {
             "artifact": artifact_public(artifact),
             "parents": parents,
-            "children": [artifact_public(r) for r in children],
-            "ancestors": [artifact_public(r) for r in get_transitive_parents(conn, artifact_id)],
-            "descendants": [artifact_public(r) for r in get_transitive_children(conn, artifact_id)],
+            "children": [artifact_public(r) for r in children if r["id"] in visible],
+            "ancestors": [artifact_public(r) for r in get_transitive_parents(conn, artifact_id)
+                          if r["id"] in visible],
+            "descendants": [artifact_public(r) for r in get_transitive_children(conn, artifact_id)
+                            if r["id"] in visible],
             "redaction_attestation": row_to_dict(attestation),
         }
 
 
+def visible_audit_rows(
+    conn: sqlite3.Connection, principal_id: str, columns: str, limit: int
+) -> list[sqlite3.Row]:
+    """Audit rows the caller acted in, plus rows on artifacts where it holds 'audit'."""
+    audit_ids = sorted(live_grant_artifact_ids(conn, principal_id, ("audit",)))
+    clause = "user_id = ?"
+    if audit_ids:
+        clause += f" OR artifact_id IN ({','.join('?' * len(audit_ids))})"
+    return conn.execute(
+        f"SELECT {columns} FROM audit_events WHERE {clause} ORDER BY timestamp DESC LIMIT ?",
+        (principal_id, *audit_ids, limit),
+    ).fetchall()
+
+
 @app.get("/audit")
-def audit(limit: int = Query(default=200, le=500)) -> list[dict[str, Any]]:
+def audit(
+    limit: int = Query(default=200, le=500), principal_id: str = Depends(resolve_principal)
+) -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM audit_events ORDER BY timestamp DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in visible_audit_rows(conn, principal_id, "*", limit)]
 
 
 # ---------------------------------------------------------------------------
@@ -1265,11 +1390,9 @@ def sika_route_demo_rounds() -> dict[str, Any]:
 
 
 @app.get("/metrics/permission-latency")
-def permission_latency_metrics() -> dict[str, Any]:
+def permission_latency_metrics(principal_id: str = Depends(resolve_principal)) -> dict[str, Any]:
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT latency_ms, decision FROM audit_events ORDER BY timestamp DESC LIMIT 1000"
-        ).fetchall()
+        rows = visible_audit_rows(conn, principal_id, "latency_ms, decision", 1000)
 
     if not rows:
         return {"count": 0, "message": "No audit events recorded yet."}
