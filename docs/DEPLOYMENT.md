@@ -41,7 +41,7 @@ The frontend uses `/api` as its API base in production automatically — no cros
 3. Vercel reads [`vercel.json`](../vercel.json) at the repo root and builds both services. The backend uses [`backend/pyproject.toml`](../backend/pyproject.toml) for Python dependencies (Vercel prefers this over `requirements.txt`).
 4. Deploy. No environment variables are required for the basic demo.
 5. Open your deployment URL (e.g. `https://biovault.vercel.app`).
-6. Click **Seed / Reset Demo** once — that calls `POST /api/seed`.
+6. To allow seeding, set `BIOVAULT_DEMO_MODE=true` and a random `BIOVAULT_ADMIN_TOKEN` (≥ 24 characters) on the backend service. Then enter that token in the dashboard and click **Start / Reset Demo** — that calls `POST /api/seed` with the admin bearer. Without both variables `/seed` returns 403.
 
 ### How routing works
 
@@ -160,6 +160,8 @@ Local reference: [`frontend/.env.example`](../frontend/.env.example).
 | `VITE_API_BASE_URL` | `/api` in production | Set only to override |
 | `BIOVAULT_DB` | `backend/biovault.db` | Optional override |
 | `DEMO_ALLOW_ALL_CORS` | unset / `false` | Leave false |
+| `BIOVAULT_DEMO_MODE` | unset (seed disabled) | `true` only on a throwaway demo deployment |
+| `BIOVAULT_ADMIN_TOKEN` | unset (seed disabled) | Random secret ≥ 24 chars; share only with demo operators |
 
 No CORS configuration needed — frontend and API share the same origin.
 
@@ -175,6 +177,8 @@ No CORS configuration needed — frontend and API share the same origin.
 |---|---|---|
 | `CORS_ALLOWED_ORIGINS` | `localhost:5173`, `localhost:3000` (+ 127.0.0.1) | Vercel URL + optional localhost |
 | `DEMO_ALLOW_ALL_CORS` | unset / `false` | `false` |
+| `BIOVAULT_DEMO_MODE` | unset (seed disabled) | `true` only on a throwaway demo deployment |
+| `BIOVAULT_ADMIN_TOKEN` | unset (seed disabled) | Random secret ≥ 24 chars |
 | `BIOVAULT_DB` | `backend/biovault.db` | optional override |
 
 Reference: [`backend/.env.example`](../backend/.env.example).

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
 /** Single API base for all fetch calls. Unified Vercel deploy uses /api; override via VITE_API_BASE_URL. */
@@ -98,6 +98,9 @@ type SeedResponse = {
 // ---------------------------------------------------------------------------
 // API — identity carried only by bearer capability token
 // ---------------------------------------------------------------------------
+
+/** Demo operator principal whose token drives the audit, lineage and metrics panels. */
+const OPERATOR_ID = "u_ceo";
 
 function authHeaders(token?: string): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -481,6 +484,10 @@ export default function App() {
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [metrics, setMetrics] = useState<LatencyMetrics | null>(null);
   const [tokens, setTokens] = useState<Record<string, string>>({});
+  // Seeded tokens for the evidence panels; read synchronously right after seeding.
+  const tokensRef = useRef<Record<string, string>>({});
+  // Operator-supplied demo admin token for POST /seed. Held in memory only.
+  const [adminToken, setAdminToken] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("u_regulatory");
   const [selectedArtifactId, setSelectedArtifactId] = useState("phase2_readiness_memo");
   const [artifactResponse, setArtifactResponse] = useState<ArtifactResponse | null>(null);
@@ -511,20 +518,21 @@ export default function App() {
     demoReady && !!selectedUserId && !!currentToken && !!selectedArtifactId && !loading;
 
   const loadLineage = useCallback(async (artifactId: string) => {
-    setLineage(await getJson<LineageResponse>(`/lineage/${artifactId}`));
+    setLineage(await getJson<LineageResponse>(`/lineage/${artifactId}`, tokensRef.current[OPERATOR_ID]));
   }, []);
 
   const syncEvidence = useCallback(
     async (artifactId?: string, requestId?: string) => {
       const aid = artifactId ?? selectedArtifactId;
+      const operatorToken = tokensRef.current[OPERATOR_ID];
       const lineagePromise: Promise<LineageResponse | null> = aid
-        ? getJson<LineageResponse>(`/lineage/${aid}`).catch(() => null)
+        ? getJson<LineageResponse>(`/lineage/${aid}`, operatorToken).catch(() => null)
         : Promise.resolve(null);
       const [u, a, ev, m, lin] = await Promise.all([
-        getJson<User[]>("/users"),
-        getJson<Artifact[]>("/artifacts"),
-        getJson<AuditEvent[]>("/audit"),
-        getJson<LatencyMetrics>("/metrics/permission-latency"),
+        getJson<User[]>("/users", operatorToken),
+        getJson<Artifact[]>("/artifacts", operatorToken),
+        getJson<AuditEvent[]>("/audit", operatorToken),
+        getJson<LatencyMetrics>("/metrics/permission-latency", operatorToken),
         lineagePromise,
       ]);
       setUsers(u);
@@ -558,11 +566,16 @@ export default function App() {
   );
 
   async function seedDemo() {
+    if (!adminToken) {
+      setMessage("Enter the demo admin token, then click Start / Reset Demo.");
+      return {};
+    }
     setLoading(true);
     setDemoReady(false);
     setMessage("Seeding BVK-14 demo data...");
     try {
-      const res = await postJson<SeedResponse>("/seed", {});
+      const res = await postJson<SeedResponse>("/seed", {}, adminToken);
+      tokensRef.current = res.tokens;
       setTokens(res.tokens);
       setGrandchildId(null);
       setCompletedSteps(new Set());
@@ -803,20 +816,10 @@ export default function App() {
     }
   }
 
+  // /seed is destructive and admin-gated, so the demo never seeds itself on page load.
   useEffect(() => {
-    async function initDemo() {
-      setInitializing(true);
-      try {
-        await seedDemo();
-      } catch {
-        setDemoReady(false);
-        setMessage("Click Start / Reset Demo to load the BVK-14 scenario.");
-      } finally {
-        setInitializing(false);
-      }
-    }
-    initDemo();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setInitializing(false);
+    setMessage("Enter the demo admin token and click Start / Reset Demo to load the BVK-14 scenario.");
   }, []);
 
   useEffect(() => {
@@ -853,7 +856,16 @@ export default function App() {
         </div>
         <div className="actions">
           <div className="action-row">
-            <button disabled={loading} onClick={() => seedDemo()} className="btn-primary">
+            <input
+              type="password"
+              className="admin-token-input"
+              aria-label="Demo admin token"
+              placeholder="Demo admin token"
+              autoComplete="off"
+              value={adminToken}
+              onChange={(e) => setAdminToken(e.target.value)}
+            />
+            <button disabled={loading || !adminToken} onClick={() => seedDemo()} className="btn-primary">
               ↺ Start / Reset Demo
             </button>
           </div>
@@ -863,7 +875,8 @@ export default function App() {
       {!demoReady && !initializing && (
         <section className="card demo-prompt">
           <p>
-            <strong>Demo not loaded.</strong> Click <strong>Start / Reset Demo</strong> to seed the
+            <strong>Demo not loaded.</strong> Enter the demo admin token and click{" "}
+            <strong>Start / Reset Demo</strong> to seed the
             BVK-14 kinase programme — Regulatory Lead, Phase II memo, and capability tokens.
           </p>
         </section>
