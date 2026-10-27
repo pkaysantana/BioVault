@@ -16,6 +16,7 @@ from typing import Any, Literal, get_args
 from cryptography.fernet import Fernet
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from app.sika_route import (
@@ -338,6 +339,32 @@ def _cors_origins() -> list[str]:
 
 _cors_allow_origins = _cors_origins()
 
+API_PREFIX = "/api"
+
+
+class VercelApiPrefixMiddleware:
+    """Serve the public `/api/*` interface when running as a Vercel service.
+
+    Vercel Services hand the backend the original public path, so on Vercel
+    (`VERCEL=1`) requests must start with `/api`; that prefix becomes the ASGI
+    root_path and is stripped once for routing. Unprefixed paths return 404 there,
+    so there is one public interface. Elsewhere (local, Render) nothing changes.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or os.environ.get("VERCEL") != "1":
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"]
+        if path != API_PREFIX and not path.startswith(API_PREFIX + "/"):
+            await JSONResponse({"detail": "Not Found"}, status_code=404)(scope, receive, send)
+            return
+        await self.app({**scope, "root_path": API_PREFIX}, receive, send)
+
+
 app = FastAPI(title="BioVault API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
@@ -346,6 +373,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(VercelApiPrefixMiddleware)
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ This repo ships a root [`vercel.json`](../vercel.json) that defines two services
 
 Public routing:
 
-- `/api/*` → backend (path stripped to `/health`, `/seed`, etc.)
+- `/api/*` → backend (FastAPI strips `/api` itself and routes to `/health`, `/seed`, etc.)
 - everything else → frontend SPA
 
 The frontend uses `/api` as its API base in production automatically — no cross-origin setup required.
@@ -53,7 +53,7 @@ Browser  →  https://your-app.vercel.app/
               └─ / (and /*)      →  frontend service →  Vite static build
 ```
 
-The backend service includes a path transform so FastAPI receives `/health`, not `/api/health`. See the `routes` block under `backend` in [`vercel.json`](../vercel.json).
+Vercel Services pass the original public path (`/api/health`) to the backend. On Vercel (`VERCEL=1`, a system environment variable available at runtime), `VercelApiPrefixMiddleware` in `backend/app/main.py` sets the ASGI `root_path` to `/api` so FastAPI routes `/api/health` to `/health`, and returns 404 for any path outside `/api`, so `/api/*` is the only public interface. Local and Render deployments keep the unprefixed paths. Don't reintroduce a `request.path` transform in `vercel.json`: it would hand the backend unprefixed paths, which the middleware rejects.
 
 ### Local unified dev (optional)
 
