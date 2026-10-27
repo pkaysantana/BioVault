@@ -33,7 +33,12 @@ type AccessResult = {
   request_id?: string;
 };
 
-type ArtifactResponse = { access: AccessResult; principal_id: string; artifact: Artifact };
+// A denial without a target grant returns only the requested id.
+type ArtifactResponse = {
+  access: AccessResult;
+  principal_id: string;
+  artifact: Pick<Artifact, "id"> & Partial<Artifact>;
+};
 
 type ParentEdge = {
   artifact: Artifact;
@@ -1037,12 +1042,16 @@ export default function App() {
                 principal: <code>{artifactResponse.principal_id}</code> ·{" "}
                 <code>{artifactResponse.access.request_id}</code>
               </p>
-              <h3>{artifactResponse.artifact.title}</h3>
-              <div className="artifact-badges" style={{ marginBottom: 12 }}>
-                <span className="artifact-type">{artifactResponse.artifact.type}</span>
-                <SensitivityBadge sensitivity={artifactResponse.artifact.sensitivity} />
-                <StatusBadge status={artifactResponse.artifact.status} />
-              </div>
+              <h3>{artifactResponse.artifact.title ?? artifactResponse.artifact.id}</h3>
+              {artifactResponse.artifact.type && (
+                <div className="artifact-badges" style={{ marginBottom: 12 }}>
+                  <span className="artifact-type">{artifactResponse.artifact.type}</span>
+                  {artifactResponse.artifact.sensitivity && (
+                    <SensitivityBadge sensitivity={artifactResponse.artifact.sensitivity} />
+                  )}
+                  {artifactResponse.artifact.status && <StatusBadge status={artifactResponse.artifact.status} />}
+                </div>
+              )}
               <pre>
                 {artifactResponse.artifact.plaintext_content ??
                   "Content withheld — access was denied."}

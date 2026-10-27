@@ -729,6 +729,11 @@ def can_access(
             detail["lineage_decision"] = "passed" if decision == "allow" else reason
             detail.update(access_metadata)
 
+        if decision == "deny" and (
+            artifact_row is None or not has_grant(conn, user_id, artifact_id, operation)
+        ):
+            detail["caller_reason"] = UNGRANTED_DENIAL_REASON
+
         log_audit(conn, user_id, artifact_id, logged_operation, decision, reason, latency_ms, rid, detail)
         return {
             "decision": decision,
@@ -742,6 +747,40 @@ def can_access(
 # ---------------------------------------------------------------------------
 # Response shaping
 # ---------------------------------------------------------------------------
+
+UNGRANTED_DENIAL_REASON = "missing_capability_grant"
+
+
+def caller_view_of_access(
+    conn: sqlite3.Connection,
+    principal_id: str,
+    artifact_id: str,
+    operation: Operation,
+    result: dict[str, Any],
+    row: sqlite3.Row | None,
+) -> tuple[dict[str, Any], bool]:
+    """Shape a decision for the caller and report whether the target is visible to it.
+
+    Without a live grant on the target, restricted, quarantined and missing
+    artifacts get one indistinguishable denial; the audit log keeps the real reason.
+    Grant holders keep the specific reason, minus ids of sources they cannot see.
+    """
+    if result["decision"] == "allow":
+        return result, True
+    if row is None or not has_grant(conn, principal_id, artifact_id, operation):
+        return {**result, "reason": UNGRANTED_DENIAL_REASON, "access_metadata": {}}, False
+    visible = live_grant_artifact_ids(conn, principal_id, LINEAGE_VISIBILITY_OPERATIONS)
+    # A revoked source stays nameable to callers who were granted it before revocation.
+    known = {r["artifact_id"] for r in conn.execute(
+        "SELECT artifact_id FROM capability_grants WHERE user_id = ?", (principal_id,)
+    )}
+    metadata = dict(result["access_metadata"])
+    if metadata.get("missing_source_artifact_id") not in visible:
+        metadata.pop("missing_source_artifact_id", None)
+    if metadata.get("blocked_source_artifact_id") not in visible | known:
+        metadata.pop("blocked_source_artifact_id", None)
+    return {**result, "access_metadata": metadata}, True
+
 
 def artifact_public(row: sqlite3.Row) -> dict[str, Any]:
     data = row_to_dict(row) or {}
@@ -957,9 +996,10 @@ def read_artifact(
     result = can_access(principal_id, artifact_id, "read", purpose="artifact_read")
     with connect() as conn:
         row = get_artifact(conn, artifact_id)
-        if not row:
-            raise HTTPException(status_code=404, detail=result)
-        payload: dict[str, Any] = {"access": result, "principal_id": principal_id, "artifact": artifact_public(row)}
+        access, visible = caller_view_of_access(conn, principal_id, artifact_id, "read", result, row)
+        if not visible:
+            return {"access": access, "principal_id": principal_id, "artifact": {"id": artifact_id}}
+        payload: dict[str, Any] = {"access": access, "principal_id": principal_id, "artifact": artifact_public(row)}
         if result["decision"] == "allow":
             payload["artifact"] = artifact_with_content(row)
         return payload
@@ -1100,6 +1140,11 @@ def query_artifact(
 
     with connect() as conn:
         row = get_artifact(conn, request.artifact_id)
+        result, visible = caller_view_of_access(
+            conn, principal_id, request.artifact_id, "read", result, row
+        )
+        if not visible:
+            row = None
         lineage = query_lineage_summary(conn, request.artifact_id) if row else {
             "included_sources": [],
             "redacted_sources": [],
@@ -1348,7 +1393,22 @@ def audit(
     limit: int = Query(default=200, le=500), principal_id: str = Depends(resolve_principal)
 ) -> list[dict[str, Any]]:
     with connect() as conn:
-        return [dict(row) for row in visible_audit_rows(conn, principal_id, "*", limit)]
+        audit_ids = live_grant_artifact_ids(conn, principal_id, ("audit",))
+        return [
+            caller_view_of_audit_row(row, audit_ids)
+            for row in visible_audit_rows(conn, principal_id, "*", limit)
+        ]
+
+
+def caller_view_of_audit_row(row: sqlite3.Row, audit_ids: set[str]) -> dict[str, Any]:
+    """Own events on artifacts without 'audit' show the caller-facing reason and no detail."""
+    event = dict(row)
+    if event["artifact_id"] in audit_ids:
+        return event
+    detail = json.loads(event["detail"]) if event["detail"] else {}
+    event["reason"] = detail.get("caller_reason", event["reason"])
+    event["detail"] = None
+    return event
 
 
 # ---------------------------------------------------------------------------

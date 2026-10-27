@@ -460,9 +460,10 @@ def test_query_deny_returns_typed_no_context(seeded, client):
     assert body["audit_ref"]["decision"] == "deny"
     assert_no_denied_query_context(body)
 
+    # Without a target grant the caller must not learn the artifact is derived.
     metadata = body["lineage_metadata"]
     assert metadata["requires_target_grant"] is True
-    assert metadata["requires_included_source_grants"] is True
+    assert metadata["requires_included_source_grants"] is False
 
 
 def test_query_after_source_revoke_denies_with_no_context(seeded, client):
