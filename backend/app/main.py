@@ -1345,7 +1345,7 @@ def visible_audit_rows(
 
 @app.get("/audit")
 def audit(
-    limit: int = Query(default=200, le=500), principal_id: str = Depends(resolve_principal)
+    limit: int = Query(default=200, ge=1, le=500), principal_id: str = Depends(resolve_principal)
 ) -> list[dict[str, Any]]:
     with connect() as conn:
         return [dict(row) for row in visible_audit_rows(conn, principal_id, "*", limit)]

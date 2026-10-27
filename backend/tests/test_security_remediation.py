@@ -331,3 +331,47 @@ def test_derivative_creator_gets_no_audit_capability(seeded, client):
 
     ceo_events = client.get("/audit", headers=auth(seeded["u_ceo"])).json()
     assert any(e["artifact_id"] == new_id and e["user_id"] == "u_research" for e in ceo_events)
+
+
+# ---------------------------------------------------------------------------
+# W9. /audit limit had a maximum but no minimum; SQLite treats LIMIT -1 as unbounded
+# ---------------------------------------------------------------------------
+
+def make_audit_events(client, tokens, n=3):
+    for _ in range(n):
+        read(client, tokens["u_cro"], PHASE2)
+        read(client, tokens["u_regulatory"], PHASE2)
+
+
+@pytest.mark.parametrize("limit", [-1, 0, -500])
+def test_audit_rejects_non_positive_limit(seeded, client, limit):
+    make_audit_events(client, seeded)
+    r = client.get("/audit", params={"limit": limit}, headers=auth(seeded["u_ceo"]))
+    assert r.status_code == 422
+
+
+def test_audit_limit_keeps_maximum_and_pagination(seeded, client):
+    make_audit_events(client, seeded)
+    ceo = auth(seeded["u_ceo"])
+    assert client.get("/audit", params={"limit": 501}, headers=ceo).status_code == 422
+    assert len(client.get("/audit", params={"limit": 1}, headers=ceo).json()) == 1
+    assert len(client.get("/audit", params={"limit": 2}, headers=ceo).json()) == 2
+    assert client.get("/audit", params={"limit": 500}, headers=ceo).status_code == 200
+    assert len(client.get("/audit", headers=ceo).json()) == audit_count(client, seeded) >= 6
+
+
+@pytest.mark.parametrize("limit", [-1, 0, 1])
+def test_audit_limit_does_not_bypass_authentication(seeded, client, limit):
+    make_audit_events(client, seeded)
+    r = client.get("/audit", params={"limit": limit})
+    assert r.status_code == 401
+    assert "detail" in r.json() and not isinstance(r.json(), list)
+
+
+def test_audit_limit_keeps_principal_scope(seeded, client):
+    make_audit_events(client, seeded)
+    cro = auth(seeded["u_cro"])
+    assert client.get("/audit", params={"limit": -1}, headers=cro).status_code == 422
+    for limit in (1, 500):
+        events = client.get("/audit", params={"limit": limit}, headers=cro).json()
+        assert events and {e["user_id"] for e in events} == {"u_cro"}
