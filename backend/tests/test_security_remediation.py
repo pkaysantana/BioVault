@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.main import connect
 from tests.conftest import ADMIN_TOKEN, auth
 
 PHASE2 = "phase2_readiness_memo"
@@ -331,3 +332,109 @@ def test_derivative_creator_gets_no_audit_capability(seeded, client):
 
     ceo_events = client.get("/audit", headers=auth(seeded["u_ceo"])).json()
     assert any(e["artifact_id"] == new_id and e["user_id"] == "u_research" for e in ceo_events)
+
+
+# ---------------------------------------------------------------------------
+# W10. Denied reads disclosed restricted metadata and existence
+#
+# Spec: a caller without a live grant for the requested operation on the
+# target gets one uniform denial whether the artifact is restricted,
+# quarantined or nonexistent: reason `missing_capability_grant`, artifact
+# reduced to the caller-supplied id, no access/lineage metadata. Callers who
+# hold the target grant keep the specific lineage reason, but source ids are
+# disclosed only when the caller holds read or audit on that source. The audit
+# log keeps the true internal reason.
+# ---------------------------------------------------------------------------
+
+MISSING = "no_such_artifact"
+RESTRICTED_FIELDS = ("title", "sensitivity", "created_by", "status", "type", "created_at")
+
+
+def strip_request_noise(body):
+    access = {k: v for k, v in body["access"].items() if k not in ("request_id", "latency_ms")}
+    return {**body, "access": access}
+
+
+def query(client, token, artifact_id, purpose="disclosure_regression"):
+    return client.post("/query", headers=auth(token), json={"artifact_id": artifact_id, "purpose": purpose})
+
+
+def strip_query_noise(body):
+    ref = {k: v for k, v in body["audit_ref"].items() if k not in ("request_id", "artifact_id")}
+    return {**{k: v for k, v in body.items() if k != "request_id"}, "audit_ref": ref}
+
+
+@pytest.mark.parametrize("artifact_id", [ADVERSE, "board_update", PHASE2])
+def test_denied_read_hides_restricted_metadata(seeded, client, artifact_id):
+    r = read(client, seeded["u_intern"], artifact_id)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["access"]["decision"] == "deny"
+    assert body["access"]["reason"] == "missing_capability_grant"
+    assert body["artifact"] == {"id": artifact_id}
+    assert not body["access"].get("access_metadata")
+    title = next(a["title"] for a in client.get("/artifacts", headers=auth(seeded["u_ceo"])).json()
+                 if a["id"] == artifact_id)
+    assert title not in r.text
+
+
+def test_denied_read_indistinguishable_from_missing(seeded, client):
+    restricted = read(client, seeded["u_intern"], "board_update")
+    missing = read(client, seeded["u_intern"], MISSING)
+    assert restricted.status_code == missing.status_code == 200
+    assert strip_request_noise(missing.json()) == {
+        **strip_request_noise(restricted.json()), "artifact": {"id": MISSING}}
+
+
+def test_quarantine_status_hidden_from_ungranted_reader(seeded, client):
+    client.post(f"/artifacts/{ADVERSE}/revoke", headers=auth(seeded["u_ceo"]), json={})
+    body = read(client, seeded["u_intern"], PHASE2).json()
+    assert body["access"]["reason"] == "missing_capability_grant"
+    assert body["artifact"] == {"id": PHASE2}
+    # A grant holder still learns why its read failed.
+    assert read(client, seeded["u_ceo"], PHASE2).json()["access"]["reason"] == "derived_from_revoked_source"
+
+
+def test_audit_keeps_true_denial_reason(seeded, client):
+    client.post(f"/artifacts/{ADVERSE}/revoke", headers=auth(seeded["u_ceo"]), json={})
+    missing_rid = read(client, seeded["u_intern"], MISSING).json()["access"]["request_id"]
+    quarantined_rid = read(client, seeded["u_intern"], PHASE2).json()["access"]["request_id"]
+
+    with connect() as conn:
+        stored = dict(conn.execute("SELECT request_id, reason FROM audit_events").fetchall())
+    assert stored[missing_rid] == "artifact_not_found"
+    assert stored[quarantined_rid] == "derived_from_revoked_source"
+
+    ceo = {e["request_id"]: e for e in client.get("/audit", headers=auth(seeded["u_ceo"])).json()}
+    assert ceo[quarantined_rid]["reason"] == "derived_from_revoked_source"
+    assert ceo[quarantined_rid]["detail"] is not None
+
+    # The actor's own audit view must not become an existence or status oracle.
+    own = {e["request_id"]: e for e in client.get("/audit", headers=auth(seeded["u_intern"])).json()}
+    for rid in (missing_rid, quarantined_rid):
+        assert own[rid]["reason"] == "missing_capability_grant"
+        assert own[rid]["detail"] is None
+
+
+def test_query_denial_indistinguishable_from_missing(seeded, client):
+    restricted = query(client, seeded["u_cro"], PHASE2).json()
+    missing = query(client, seeded["u_cro"], MISSING).json()
+    assert restricted["reason"] == missing["reason"] == "missing_capability_grant"
+    assert restricted["lineage_metadata"] == {
+        "requires_target_grant": True, "requires_included_source_grants": False,
+        "included_source_count": None, "blocked_source_artifact_id": None,
+        "missing_source_artifact_id": None,
+    }
+    assert strip_query_noise(restricted) == strip_query_noise(missing)
+
+
+def test_unreadable_source_id_not_disclosed_to_target_grantee(seeded, client):
+    assert grant(client, seeded["u_ceo"], PHASE2, "u_intern").json()["granted"] is True
+    r = read(client, seeded["u_intern"], PHASE2).json()
+    assert r["access"]["reason"] == "missing_source_lineage_capability"
+    assert r["artifact"]["id"] == PHASE2 and "plaintext_content" not in r["artifact"]
+    assert "missing_source_artifact_id" not in r["access"].get("access_metadata", {})
+    q = query(client, seeded["u_intern"], PHASE2).json()
+    assert q["reason"] == "missing_source_lineage_capability"
+    assert q["lineage_metadata"]["missing_source_artifact_id"] is None
+    assert q["lineage_metadata"]["requires_included_source_grants"] is True

@@ -123,10 +123,12 @@ type BioVaultQueryResult = {
   "authorized_context": null,
   "lineage_metadata": {
     "requires_target_grant": true,
-    "requires_included_source_grants": true
+    "requires_included_source_grants": false
   }
 }
 ```
+
+A caller without a live grant on the target receives this same denial whether the artifact is restricted, quarantined or nonexistent, with no lineage details. The audit log keeps the true reason. Callers holding the target grant keep the specific lineage reason, but `blocked_source_artifact_id` / `missing_source_artifact_id` are set only for sources the caller can read or audit.
 
 ## Agent Adapter Pattern
 
